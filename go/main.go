@@ -54,16 +54,17 @@ func doesFileNeedBackup(db *DB, path string, info fs.FileInfo) (bool, error) {
 
 type QueueItem struct {
 	Path  string
-	Depth int32
+	Depth int
 }
 
 type BackupRequest struct {
 	Path          string
 	IsDir         bool
+	Recurse       bool
 	DirtySubFiles []string
 }
 
-func getFilesToBackup(db *DB, root string, maxDepth int32, earlyExit bool) ([]*BackupRequest, error) {
+func getFilesToBackup(db *DB, root string, maxDepth int, sizeThreshold int) ([]*BackupRequest, error) {
 	dirQueue := []QueueItem{{Path: root, Depth: 0}}
 	backupRequests := []*BackupRequest{}
 
@@ -72,17 +73,20 @@ func getFilesToBackup(db *DB, root string, maxDepth int32, earlyExit bool) ([]*B
 		dir := dirQueue[0]
 		dirQueue = dirQueue[1:]
 
+		req := &BackupRequest{
+			Path:  dir.Path,
+			IsDir: true,
+		}
+
 		if maxDepth > 0 && dir.Depth > maxDepth {
 			// Check if directory needs backup.
-			files, err := getFilesToBackup(db, dir.Path, -1, false)
+			files, err := getFilesToBackup(db, dir.Path, -1, sizeThreshold)
 			if err != nil {
 				return nil, err
 			}
 			if len(files) > 0 {
-				req := &BackupRequest{
-					Path:  dir.Path,
-					IsDir: true,
-				}
+				// This is a terminal directory (i.e. we just back up the whole thing as an archive)
+				req.Recurse = true
 				for _, f := range files {
 					req.DirtySubFiles = append(req.DirtySubFiles, f.Path)
 				}
@@ -118,17 +122,25 @@ func getFilesToBackup(db *DB, root string, maxDepth int32, earlyExit bool) ([]*B
 			}
 
 			if dirty {
-				backupRequests = append(backupRequests, &BackupRequest{
-					Path:  path,
-					IsDir: false, // not strictly necessary since false is the bool default init value
-				})
-				log.Printf("%s - %v", path, info.ModTime())
-				if earlyExit {
-					return backupRequests, nil
+				if info.Size() > int64(sizeThreshold) {
+					// If the file meets the given criteria, back it up individually
+					backupRequests = append(backupRequests, &BackupRequest{
+						Path:  path,
+						IsDir: false,
+					})
+					continue
+				} else {
+					// Otherwise add it to this directory's dirty files list
+					req.DirtySubFiles = append(req.DirtySubFiles, path)
 				}
+				log.Printf("%s (%d bytes) - %v", path, info.Size(), info.ModTime())
 			} else {
 				log.Printf("%s already backed up, skipping", path)
 			}
+		}
+
+		if len(req.DirtySubFiles) > 0 {
+			backupRequests = append(backupRequests, req)
 		}
 	}
 	return backupRequests, nil
@@ -150,10 +162,9 @@ func markFile(db *DB, path string) error {
 func main() {
 	fMetaDb := flag.String("db", "backup.db", "database location for local cache storage")
 	fRootDir := flag.String("dir", ".", "root directory for backup operation")
+	fMaxDepth := flag.Int("max_depth", -1, "max subfolder depth to recurse into before just archiving the whole tree (-1 means no max)")
+	fIndividualSizeThreshold := flag.Int("size_threshold", 2048, "size threshold, in bytes, above which files get backed up individually")
 	flag.Parse()
-
-	// Number of directories deep to scan.
-	const maxDepth = 1
 
 	// Load the db
 	db, err := newDB(*fMetaDb)
@@ -162,7 +173,7 @@ func main() {
 	}
 
 	log.Println("> Scanning files")
-	paths, err := getFilesToBackup(db, *fRootDir, maxDepth, false)
+	paths, err := getFilesToBackup(db, *fRootDir, *fMaxDepth, *fIndividualSizeThreshold)
 	if err != nil {
 		log.Fatalf("error finding files to backup: %v", err)
 	}
@@ -171,8 +182,9 @@ func main() {
 	log.Println("> Backing up files")
 	for _, path := range paths {
 		if path.IsDir {
-			log.Printf("Backing up directory: %s", path.Path)
+			log.Printf("Backing up directory: %s, dirty files:", path.Path)
 			for _, f := range path.DirtySubFiles {
+				log.Printf("  %s", f)
 				markFile(db, f)
 			}
 			continue
