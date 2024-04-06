@@ -1,0 +1,5 @@
+*.swp
+*.DS_Store
+*.db
+go-bin/
+test-data/
