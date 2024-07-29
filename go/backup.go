@@ -1,11 +1,15 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"context"
 	"fmt"
+	"io"
 	"local/backup/s3_helpers"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -28,17 +32,92 @@ func backupFile(client *s3.Client, bucket string, localPath string) error {
 	return s3_helpers.UploadFile(client, bucket, key, localPath)
 }
 
-func backupDirectory(path string) error {
-	fmt.Printf("dir %q -> %q\n", path, path)
+// https://www.arthurkoziel.com/writing-tar-gz-files-in-go/
+func backupDirectory(client *s3.Client, bucket string, localPath string, files []string) error {
+	// Strip off the basename just in case
+	key := filepath.Join(filepath.Base(localPath), "_files.tar.gz")
+	log.Printf("backing up directory %q -> %q", localPath, key)
+
+	// Create a buffer to write the files into
+	buf := &bytes.Buffer{}
+
+	// Streams for tar archive and gzip
+	gw := gzip.NewWriter(buf)
+	tw := tar.NewWriter(gw)
+
+	// Scan all the specified files and back them up to the archive.
+	for _, filename := range files {
+		log.Printf("  archiving file %q", filename)
+		if err := addFileToArchive(tw, localPath, filename); err != nil {
+			return fmt.Errorf("failed to add file %q to archive: %+v", filename, err)
+		}
+	}
+
+	// Explicitly close those writers so the tar archive and gzip file are complete before we write
+	// the buffer to S3. Make sure to close the tar writer first to flush all archive bytes to the
+	// gzip compressor.
+	// TODO: ideally we'd do this in a streaming manner
+	if err := tw.Close(); err != nil {
+		log.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		log.Fatal(err)
+	}
+
+	// Write the results of the buffer to s3
+	_, err := client.PutObject(context.TODO(), &s3.PutObjectInput{
+		Bucket: &bucket,
+		Key:    &key,
+		// TODO: is this optimal?
+		Body: bytes.NewReader(buf.Bytes()),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to upload local directory %q to %q", localPath, key)
+	}
 	return nil
+}
 
-	cmd := exec.Command(
-		"rclone", "copy" /*"${args[@]}",*/, path, rcloneName+":"+bucket+"/"+path)
+func addFileToArchive(tw *tar.Writer, baseDir string, filename string) error {
+	// Open the file which will be written into the archive
+	file, err := os.Open(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
 
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// Get FileInfo about our file providing file size, mode, etc.
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
 
-	// Run still runs the command and waits for completion
-	// but the output is instantly piped to Stdout
-	return cmd.Run()
+	// Create a tar Header from the FileInfo data
+	header, err := tar.FileInfoHeader(info, info.Name())
+	if err != nil {
+		return err
+	}
+
+	// Use full path as name (FileInfoHeader only takes the basename)
+	// If we don't do this the directory strucuture would
+	// not be preserved
+	// https://golang.org/src/archive/tar/common.go?#L626
+	relativePath, err := filepath.Rel(baseDir, filename)
+	if err != nil {
+		return err
+	}
+	header.Name = relativePath
+
+	// Write file header to the tar archive
+	err = tw.WriteHeader(header)
+	if err != nil {
+		return err
+	}
+
+	// Copy file content to tar archive
+	_, err = io.Copy(tw, file)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }

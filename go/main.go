@@ -85,10 +85,11 @@ type QueueItem struct {
 }
 
 type BackupRequest struct {
-	Path          string
-	IsDir         bool
-	Recurse       bool
-	DirtySubFiles []string
+	Path             string
+	IsDir            bool
+	Recurse          bool
+	DirtySubFiles    []string
+	SubFilesToBackup []string
 }
 
 func doBackupFile(path string) bool {
@@ -118,7 +119,7 @@ func getFilesToBackup(db *DB, root string, maxDepth int, sizeThreshold int) ([]*
 
 		log.Printf("scanning dir %q depth %d", dir.Path, dir.Depth)
 
-		if false && maxDepth > 0 && dir.Depth > maxDepth {
+		if maxDepth > 0 && dir.Depth > maxDepth {
 			// Check if directory needs backup.
 			files, err := getFilesToBackup(db, dir.Path, -1, sizeThreshold)
 			if err != nil {
@@ -128,11 +129,7 @@ func getFilesToBackup(db *DB, root string, maxDepth int, sizeThreshold int) ([]*
 				// This is a terminal directory (i.e. we just back up the whole thing as an archive)
 				req.Recurse = true
 				for _, f := range files {
-					if doBackupFile(f.Path) {
-						req.DirtySubFiles = append(req.DirtySubFiles, f.Path)
-					} else {
-						log.Printf("skipping file %s", f.Path)
-					}
+					req.DirtySubFiles = append(req.DirtySubFiles, f.Path)
 				}
 				backupRequests = append(backupRequests, req)
 			}
@@ -166,21 +163,25 @@ func getFilesToBackup(db *DB, root string, maxDepth int, sizeThreshold int) ([]*
 					log.Fatal(err)
 				}
 
-				if dirty {
-					if info.Size() > int64(sizeThreshold) {
-						// If the file meets the given criteria, back it up individually
+				log.Printf("%s (%d bytes) - %v", path, info.Size(), info.ModTime())
+				if info.Size() > int64(sizeThreshold) {
+					if dirty {
+						// If the file meets the given criteria and is dirty, back it up individually
 						backupRequests = append(backupRequests, &BackupRequest{
 							Path:  path,
 							IsDir: false,
 						})
-						continue
 					} else {
-						// Otherwise add it to this directory's dirty files list
+						log.Printf("%s already backed up, skipping", path)
+					}
+				} else {
+					// Make sure to include _all_ files below the individual backup threshold - if this directory
+					// contains _any_ dirty files below the size threshold, we want to make sure we include _all_
+					// of them in the archive.
+					req.SubFilesToBackup = append(req.SubFilesToBackup, path)
+					if dirty {
 						req.DirtySubFiles = append(req.DirtySubFiles, path)
 					}
-					log.Printf("%s (%d bytes) - %v", path, info.Size(), info.ModTime())
-				} else {
-					log.Printf("%s already backed up, skipping", path)
 				}
 			} else {
 				log.Printf("skipping file %s", path)
@@ -189,6 +190,8 @@ func getFilesToBackup(db *DB, root string, maxDepth int, sizeThreshold int) ([]*
 
 		if len(req.DirtySubFiles) > 0 {
 			backupRequests = append(backupRequests, req)
+		} else {
+			log.Printf("directory %q has no dirty files, skipping", req.Path)
 		}
 	}
 	return backupRequests, nil
@@ -229,13 +232,26 @@ func recoverFiles(bucket string, localRoot string) {
 		if err := s3_helpers.DownloadFile(client, bucket, *object.Key, localPath); err != nil {
 			log.Fatalf("%s", err)
 		}
+		if filepath.Base(localPath) == "_files.tar.gz" {
+			log.Printf("extracting files from archive %q", localPath)
+			unTar(localPath)
+			// Delete the archive
+			log.Printf("deleting archive %q", localPath)
+			os.Remove(localPath)
+		}
 		log.Printf("downloaded %q to local file %q", *object.Key, localPath)
 	}
 
 	log.Println("< Recovering files")
 }
 
-func backupFiles(db *DB, localRoot string, bucket string, maxDepth int, fileSizeThreshold int) {
+func backupFiles(dbFile string, localRoot string, bucket string, maxDepth int, fileSizeThreshold int) {
+	// Load the db
+	db, err := newDB(dbFile)
+	if err != nil {
+		log.Fatalf("error loading db: %v", err)
+	}
+
 	// Create an Amazon S3 service client
 	cfg := minioConfig()
 	client := s3.NewFromConfig(*cfg)
@@ -247,21 +263,34 @@ func backupFiles(db *DB, localRoot string, bucket string, maxDepth int, fileSize
 	}
 	log.Println("< Scanning files")
 
+	log.Println("> FOUND FILES")
+	for _, path := range paths {
+		if path.IsDir {
+			log.Printf("d %s", path.Path)
+			for _, file := range path.DirtySubFiles {
+				log.Printf("  %s", file)
+			}
+		} else {
+			log.Printf("f %s", path.Path)
+		}
+	}
+	log.Println("< FOUND FILES")
+
 	log.Println("> Backing up files")
 	for _, path := range paths {
-		log.Printf("checking file %q is dir %v", path.Path, path.IsDir)
+
 		// TODO: strip path so it's relative to the root
 		if path.IsDir {
 			log.Printf("Backing up directory: %s, dirty files:", path.Path)
-			//backupFile(client, bucket, path.Path)
+			backupDirectory(client, bucket, path.Path, path.SubFilesToBackup)
 			for _, f := range path.DirtySubFiles {
-				log.Printf("  %s", f)
 				markFile(db, f)
 			}
 			continue
 		}
 
 		log.Printf("Backing up file: %s", path.Path)
+		// TODO: strip path so it's relative to the root
 		backupFile(client, bucket, path.Path)
 		err := markFile(db, path.Path)
 		if err != nil {
@@ -280,15 +309,9 @@ func main() {
 	fDoRecover := flag.Bool("recover", false, "If true, recovers FROM the remote location TO the local location")
 	flag.Parse()
 
-	// Load the db
-	db, err := newDB(*fMetaDb)
-	if err != nil {
-		log.Fatalf("error loading db: %v", err)
-	}
-
 	if *fDoRecover {
 		recoverFiles(*fBucket, *fRootDir)
 	} else {
-		backupFiles(db, *fRootDir, *fBucket, *fMaxDepth, *fIndividualSizeThreshold)
+		backupFiles(*fMetaDb, *fRootDir, *fBucket, *fMaxDepth, *fIndividualSizeThreshold)
 	}
 }
