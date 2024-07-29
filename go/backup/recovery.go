@@ -12,7 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-func RecoverFiles(cfg *aws.Config, bucket string, localRoot string) {
+// TODO: return errors vs. Fatal-ing
+func RecoverFiles(cfg *aws.Config, bucket string, localRoot string) error {
 	log.Println("> Recovering files")
 
 	// Create an Amazon S3 service client
@@ -44,4 +45,6 @@ func RecoverFiles(cfg *aws.Config, bucket string, localRoot string) {
 	}
 
 	log.Println("< Recovering files")
+
+	return nil
 }

@@ -15,27 +15,24 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-const rcloneName = "local-minio"
-const bucket = "test-data"
-
-func backupFile(client *s3.Client, bucket string, localPath string) error {
-	dirname := filepath.Dir(localPath)
-	if dirname == "." {
-		dirname = ""
-	} else {
-		dirname += "/"
+func backupFile(client *s3.Client, bucket string, localRoot string, localPath string) error {
+	key, err := filepath.Rel(localRoot, localPath)
+	if err != nil {
+		return err
 	}
-
-	key := filepath.Join(dirname, filepath.Base(localPath))
 
 	log.Printf("backing up file %q to %q", localPath, key)
 	return s3_helpers.UploadFile(client, bucket, key, localPath)
 }
 
 // https://www.arthurkoziel.com/writing-tar-gz-files-in-go/
-func backupDirectory(client *s3.Client, bucket string, localPath string, files []string) error {
-	// Strip off the basename just in case
-	key := filepath.Join(filepath.Base(localPath), "_files.tar.gz")
+func backupDirectory(client *s3.Client, bucket string, localRoot string, localPath string, files []string) error {
+	keyBase, err := filepath.Rel(localRoot, localPath)
+	if err != nil {
+		return err
+	}
+
+	key := filepath.Join(keyBase, "_files.tar.gz")
 	log.Printf("backing up directory %q -> %q", localPath, key)
 
 	// Create a buffer to write the files into
@@ -65,7 +62,7 @@ func backupDirectory(client *s3.Client, bucket string, localPath string, files [
 	}
 
 	// Write the results of the buffer to s3
-	_, err := client.PutObject(context.TODO(), &s3.PutObjectInput{
+	_, err = client.PutObject(context.TODO(), &s3.PutObjectInput{
 		Bucket: &bucket,
 		Key:    &key,
 		// TODO: is this optimal?

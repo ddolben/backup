@@ -4,29 +4,7 @@ import (
 	"flag"
 
 	"local/backup/backup"
-
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 )
-
-func minioConfig() *aws.Config {
-	const defaultRegion = "us-east-1"
-	staticResolver := aws.EndpointResolverFunc(func(service, region string) (aws.Endpoint, error) {
-		return aws.Endpoint{
-			PartitionID:       "aws",
-			URL:               "http://localhost:9000",
-			SigningRegion:     defaultRegion,
-			HostnameImmutable: true,
-		}, nil
-	})
-
-	cfg := &aws.Config{
-		Region:           defaultRegion,
-		Credentials:      credentials.NewStaticCredentialsProvider("minio", "minio123", ""),
-		EndpointResolver: staticResolver,
-	}
-	return cfg
-}
 
 func main() {
 	fMetaDb := flag.String("db", "backup.db", "database location for local cache storage")
@@ -37,7 +15,7 @@ func main() {
 	fDoRecover := flag.Bool("recover", false, "If true, recovers FROM the remote location TO the local location")
 	flag.Parse()
 
-	cfg := minioConfig()
+	cfg := backup.GetMinioConfig("http://localhost:9000")
 
 	if *fDoRecover {
 		backup.RecoverFiles(cfg, *fBucket, *fRootDir)

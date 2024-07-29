@@ -47,6 +47,7 @@ if [ ! -z "$do_create" ]; then
     -it \
     -d \
     --name "$container_name" \
+    --network backup_backup \
     -v ${PWD}:/code \
     -w /code \
     $docker_args \

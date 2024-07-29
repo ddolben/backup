@@ -9,14 +9,14 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-func BackupFiles(cfg *aws.Config, dbFile string, localRoot string, bucket string, maxDepth int, fileSizeThreshold int) {
+// TODO: return errors rather than Fatal-ing
+func BackupFiles(cfg *aws.Config, dbFile string, localRoot string, bucket string, maxDepth int, fileSizeThreshold int) error {
 	// Load the db
 	db, err := newDB(dbFile)
 	if err != nil {
@@ -48,11 +48,10 @@ func BackupFiles(cfg *aws.Config, dbFile string, localRoot string, bucket string
 
 	log.Println("> Backing up files")
 	for _, path := range paths {
-
 		// TODO: strip path so it's relative to the root
 		if path.IsDir {
 			log.Printf("Backing up directory: %s, dirty files:", path.Path)
-			backupDirectory(client, bucket, path.Path, path.SubFilesToBackup)
+			backupDirectory(client, bucket, localRoot, path.Path, path.SubFilesToBackup)
 			for _, f := range path.DirtySubFiles {
 				markFile(db, f)
 			}
@@ -61,13 +60,18 @@ func BackupFiles(cfg *aws.Config, dbFile string, localRoot string, bucket string
 
 		log.Printf("Backing up file: %s", path.Path)
 		// TODO: strip path so it's relative to the root
-		backupFile(client, bucket, path.Path)
-		err := markFile(db, path.Path)
+		err = backupFile(client, bucket, localRoot, path.Path)
+		if err != nil {
+			return fmt.Errorf("failed to backup file %q: %+v", path.Path, err)
+		}
+		err = markFile(db, path.Path)
 		if err != nil {
 			log.Fatalf("error marking file as processed: %v", err)
 		}
 	}
 	log.Println("< Backing up files")
+
+	return nil
 }
 
 func markFile(db *DB, path string) error {
@@ -136,11 +140,10 @@ type BackupRequest struct {
 }
 
 func doBackupFile(path string) bool {
-	dir := filepath.Dir(path)
 	filename := filepath.Base(path)
 
 	// TODO: this check is kinda janky
-	if !strings.Contains(dir, "/") && filename == "backup.db" {
+	if filename == "backup.db" {
 		return false
 	}
 	return true

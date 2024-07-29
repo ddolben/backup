@@ -16,9 +16,14 @@ services:
         mkdir -p
         /data/test-bucket
         && minio server /data --console-address ":9001"
+    networks:
+      - backup
     ports:
       - 9000:9000
       - 9001:9001
+
+networks:
+  backup:
 
 volumes:
   minio_data:
