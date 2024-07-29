@@ -1,4 +1,4 @@
-package main
+package backup
 
 import (
 	"database/sql"
