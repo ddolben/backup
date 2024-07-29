@@ -21,6 +21,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
+const minioUrl = "http://minio:9000"
+
 func init() {
 	rand.Seed(time.Now().UnixNano())
 }
@@ -161,20 +163,27 @@ func clearBucket(client *s3.Client, bucket string) error {
 	return nil
 }
 
-func TestBasicRoundTrip(t *testing.T) {
-	// Create test directory and write a bunch of files
-	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
-	must(err)
+type roundTripTestConfig struct {
+	MaxDepth                int
+	IndividualSizeThreshold int
+}
+
+func getDefaultTestConfig() *roundTripTestConfig {
+	return &roundTripTestConfig{
+		MaxDepth:                1,
+		IndividualSizeThreshold: 10,
+	}
+}
+
+func roundTripTest(testBaseDir string, testConfig *roundTripTestConfig, t *testing.T) {
 	testRecoveryDir, err := os.MkdirTemp("/tmp", "dave-recovery-test-")
 	must(err)
 
-	// TODO: defer function to delete the temp folders
+	defer (func() {
+		must(os.RemoveAll(testRecoveryDir))
+	})()
 
-	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
-	must(createTestFile(filepath.Join(testBaseDir, "b.txt"), 9))
-	must(createTestFile(filepath.Join(testBaseDir, "c.txt"), 25))
-
-	cfg := backup.GetMinioConfig("http://minio:9000")
+	cfg := backup.GetMinioConfig(minioUrl)
 	dbFile := filepath.Join(testBaseDir, "backup.db")
 	bucket := "test-bucket"
 
@@ -182,8 +191,98 @@ func TestBasicRoundTrip(t *testing.T) {
 	must(clearBucket(client, bucket))
 
 	// a and b but not c will be tarred/gzipped
-	must(backup.BackupFiles(cfg, dbFile, testBaseDir, bucket, 1, 10))
+	must(backup.BackupFiles(cfg, dbFile, testBaseDir, bucket, testConfig.MaxDepth, testConfig.IndividualSizeThreshold))
 	must(backup.RecoverFiles(cfg, bucket, testRecoveryDir))
 
 	compareDirectories(testBaseDir, testRecoveryDir, t)
+}
+
+func TestBasicRoundTrip(t *testing.T) {
+	// Create test directory and write a bunch of files
+	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
+	must(err)
+
+	defer (func() {
+		must(os.RemoveAll(testBaseDir))
+	})()
+
+	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "c.txt"), 25))
+
+	roundTripTest(testBaseDir, getDefaultTestConfig(), t)
+}
+
+func TestRoundTripWithSubdirectories(t *testing.T) {
+	// Create test directory and write a bunch of files
+	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
+	must(err)
+
+	defer (func() {
+		must(os.RemoveAll(testBaseDir))
+	})()
+
+	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "c.txt"), 25))
+
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/c.txt"), 25))
+
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/c.txt"), 25))
+
+	roundTripTest(testBaseDir, getDefaultTestConfig(), t)
+}
+
+func TestRoundTripWithDeepSubdirectories(t *testing.T) {
+	// Create test directory and write a bunch of files
+	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
+	must(err)
+
+	defer (func() {
+		must(os.RemoveAll(testBaseDir))
+	})()
+
+	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "c.txt"), 25))
+
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/one/two/three/a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/four/five/six/b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/seven/eight/nine/c.txt"), 25))
+
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/with/many/directories/a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/with/many/directories/b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/with/many/directories/c.txt"), 25))
+
+	config := getDefaultTestConfig()
+	config.MaxDepth = 10
+	roundTripTest(testBaseDir, config, t)
+}
+
+func TestRoundTripWithDeepSubdirectoriesBeyondThreshold(t *testing.T) {
+	// Create test directory and write a bunch of files
+	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
+	must(err)
+
+	defer (func() {
+		must(os.RemoveAll(testBaseDir))
+	})()
+
+	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "c.txt"), 25))
+
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/one/two/three/a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/four/five/six/b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/seven/eight/nine/c.txt"), 25))
+
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/with/many/directories/a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/with/many/directories/b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/with/many/directories/c.txt"), 25))
+
+	roundTripTest(testBaseDir, getDefaultTestConfig(), t)
 }
