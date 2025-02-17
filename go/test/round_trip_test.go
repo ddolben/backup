@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"local/backup/backup"
+	"local/backup/logging"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -184,13 +185,18 @@ func roundTripTest(testBaseDir string, testConfig *roundTripTestConfig, t *testi
 	cfg := backup.GetMinioConfig(minioUrl)
 	dbFile := filepath.Join(testBaseDir, "backup.db")
 	bucket := "test-bucket"
+	prefix := "automated-test"
 
 	client := s3.NewFromConfig(*cfg)
 	must(clearBucket(client, bucket))
 
+	logger := &logging.DefaultLogger{
+		Level: logging.Debug,
+	}
+
 	// a and b but not c will be tarred/gzipped
-	must(backup.BackupFiles(cfg, dbFile, testBaseDir, bucket, testConfig.SizeThreshold, false))
-	must(backup.RecoverFiles(cfg, bucket, testRecoveryDir))
+	must(backup.BackupFiles(logger, cfg, dbFile, testBaseDir, bucket, prefix, testConfig.SizeThreshold, false))
+	must(backup.RecoverFiles(cfg, bucket, prefix, testRecoveryDir))
 
 	compareDirectories(testBaseDir, testRecoveryDir, t)
 }
@@ -282,4 +288,26 @@ func TestRoundTripWithDeepSubdirectoriesBeyondThreshold(t *testing.T) {
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/with/many/directories/c.txt"), 25))
 
 	roundTripTest(testBaseDir, getDefaultTestConfig(), t)
+}
+
+func TestRoundTripWithLargeSizeThreshold(t *testing.T) {
+	// Create test directory and write a bunch of files
+	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
+	must(err)
+
+	defer (func() {
+		must(os.RemoveAll(testBaseDir))
+	})()
+
+	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "c.txt"), 25))
+
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/one/two/three/a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/four/five/six/b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/seven/eight/nine/c.txt"), 25))
+
+	config := getDefaultTestConfig()
+	config.SizeThreshold = 1000000
+	roundTripTest(testBaseDir, config, t)
 }

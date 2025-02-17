@@ -15,24 +15,32 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-func backupFile(client *s3.Client, bucket string, localRoot string, localPath string) error {
+func backupFile(client *s3.Client, bucket string, prefix string, localRoot string, localPath string) error {
 	key, err := filepath.Rel(localRoot, localPath)
 	if err != nil {
 		return err
 	}
+	key = filepath.Join(prefix, key)
 
 	log.Printf("backing up file %q to %q", localPath, key)
 	return s3_helpers.UploadFile(client, bucket, key, localPath)
 }
 
 // https://www.arthurkoziel.com/writing-tar-gz-files-in-go/
-func backupDirectory(client *s3.Client, bucket string, localRoot string, localPath string, files []string) error {
+func backupDirectory(
+	client *s3.Client,
+	bucket string,
+	prefix string,
+	localRoot string,
+	localPath string,
+	files []string,
+) error {
 	keyBase, err := filepath.Rel(localRoot, localPath)
 	if err != nil {
 		return err
 	}
 
-	key := filepath.Join(keyBase, "_files.tar.gz")
+	key := filepath.Join(prefix, keyBase, "_files.tar.gz")
 	log.Printf("backing up directory %q -> %q", localPath, key)
 
 	// Create a buffer to write the files into
@@ -69,7 +77,7 @@ func backupDirectory(client *s3.Client, bucket string, localRoot string, localPa
 		Body: bytes.NewReader(buf.Bytes()),
 	})
 	if err != nil {
-		return fmt.Errorf("failed to upload local directory %q to %q", localPath, key)
+		return fmt.Errorf("failed to upload local directory %q to %q: %v", localPath, key, err)
 	}
 	return nil
 }

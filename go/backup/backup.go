@@ -19,7 +19,16 @@ import (
 )
 
 // TODO: return errors rather than Fatal-ing
-func BackupFiles(logger logging.Logger, cfg *aws.Config, dbFile string, localRoot string, bucket string, sizeThreshold int64, dryRun bool) error {
+func BackupFiles(
+	logger logging.Logger,
+	cfg *aws.Config,
+	dbFile string,
+	localRoot string,
+	bucket string,
+	prefix string,
+	sizeThreshold int64,
+	dryRun bool,
+) error {
 	logger.Debugf("size threshold: %d", sizeThreshold)
 
 	// Load the db
@@ -64,7 +73,7 @@ func BackupFiles(logger logging.Logger, cfg *aws.Config, dbFile string, localRoo
 	// TODO: check for duplicate batches by path
 
 	for _, batch := range batches {
-		err = backupBatch(logger, db, client, cleanRoot, bucket, batch)
+		err = backupBatch(logger, db, client, cleanRoot, bucket, prefix, batch)
 		if err != nil {
 			log.Fatalf("error backing up batch: %+v", err)
 		}
@@ -74,7 +83,15 @@ func BackupFiles(logger logging.Logger, cfg *aws.Config, dbFile string, localRoo
 	return nil
 }
 
-func backupBatch(logger logging.Logger, db *DB, client *s3.Client, root string, bucket string, batch *BackupBatch) error {
+func backupBatch(
+	logger logging.Logger,
+	db *DB,
+	client *s3.Client,
+	root string,
+	bucket string,
+	prefix string,
+	batch *BackupBatch,
+) error {
 	if len(batch.Files) == 0 {
 		return nil
 	}
@@ -92,7 +109,7 @@ func backupBatch(logger logging.Logger, db *DB, client *s3.Client, root string, 
 		}
 		logger.Verbosef("Backing up file batch: %s, dirty files: %v", relativeRoot, files)
 
-		err = backupDirectory(client, bucket, root, batch.Root, files)
+		err = backupDirectory(client, bucket, prefix, root, batch.Root, files)
 		if err != nil {
 			return fmt.Errorf("failed to backup batch %q: %+v", batch.Root, err)
 		}
@@ -107,7 +124,7 @@ func backupBatch(logger logging.Logger, db *DB, client *s3.Client, root string, 
 			return err
 		}
 		logger.Verbosef("Backing up file: %s", relativePath)
-		err = backupFile(client, bucket, root, filePath)
+		err = backupFile(client, bucket, prefix, root, filePath)
 		if err != nil {
 			return fmt.Errorf("failed to backup file %q: %+v", filePath, err)
 		}

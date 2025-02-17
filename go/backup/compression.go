@@ -65,6 +65,14 @@ func unTar(path string) error {
 
 		// if it's a file create it
 		case tar.TypeReg:
+			// Create all intermediate directories required
+			dirPath := filepath.Dir(target)
+			if _, err := os.Stat(dirPath); err != nil {
+				log.Printf("creating intermediate directories: %q", dirPath)
+				if err := os.MkdirAll(dirPath, 0755); err != nil {
+					return err
+				}
+			}
 			f, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode))
 			if err != nil {
 				return err
