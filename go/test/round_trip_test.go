@@ -164,14 +164,12 @@ func clearBucket(client *s3.Client, bucket string) error {
 }
 
 type roundTripTestConfig struct {
-	MaxDepth                int
-	IndividualSizeThreshold int
+	SizeThreshold int64
 }
 
 func getDefaultTestConfig() *roundTripTestConfig {
 	return &roundTripTestConfig{
-		MaxDepth:                1,
-		IndividualSizeThreshold: 10,
+		SizeThreshold: 10,
 	}
 }
 
@@ -191,7 +189,7 @@ func roundTripTest(testBaseDir string, testConfig *roundTripTestConfig, t *testi
 	must(clearBucket(client, bucket))
 
 	// a and b but not c will be tarred/gzipped
-	must(backup.BackupFiles(cfg, dbFile, testBaseDir, bucket, testConfig.MaxDepth, testConfig.IndividualSizeThreshold))
+	must(backup.BackupFiles(cfg, dbFile, testBaseDir, bucket, testConfig.SizeThreshold, false))
 	must(backup.RecoverFiles(cfg, bucket, testRecoveryDir))
 
 	compareDirectories(testBaseDir, testRecoveryDir, t)
@@ -259,7 +257,6 @@ func TestRoundTripWithDeepSubdirectories(t *testing.T) {
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/with/many/directories/c.txt"), 25))
 
 	config := getDefaultTestConfig()
-	config.MaxDepth = 10
 	roundTripTest(testBaseDir, config, t)
 }
 

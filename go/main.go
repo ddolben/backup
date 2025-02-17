@@ -9,10 +9,10 @@ import (
 func main() {
 	fMetaDb := flag.String("db", "backup.db", "database location for local cache storage")
 	fRootDir := flag.String("dir", ".", "root directory for backup operation")
-	fMaxDepth := flag.Int("max_depth", -1, "max subfolder depth to recurse into before just archiving the whole tree (-1 means no max)")
+	fSizeThreshold := flag.Int64("size_threshold", 1000000, "defines the threshold above which a file gets backed up by itself, as well as the max size of a directory to get zipped together")
 	fBucket := flag.String("bucket", "test-bucket", "S3 bucket")
-	fIndividualSizeThreshold := flag.Int("size_threshold", 0, "size threshold, in bytes, above which files get backed up individually")
 	fDoRecover := flag.Bool("recover", false, "If true, recovers FROM the remote location TO the local location")
+	fDryRun := flag.Bool("dry_run", true, "if true, print a plan and don't actually send any files to the backup destination")
 	flag.Parse()
 
 	cfg := backup.GetMinioConfig("http://localhost:9000")
@@ -20,6 +20,6 @@ func main() {
 	if *fDoRecover {
 		backup.RecoverFiles(cfg, *fBucket, *fRootDir)
 	} else {
-		backup.BackupFiles(cfg, *fMetaDb, *fRootDir, *fBucket, *fMaxDepth, *fIndividualSizeThreshold)
+		backup.BackupFiles(cfg, *fMetaDb, *fRootDir, *fBucket, *fSizeThreshold, *fDryRun)
 	}
 }

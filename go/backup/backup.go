@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -16,7 +17,9 @@ import (
 )
 
 // TODO: return errors rather than Fatal-ing
-func BackupFiles(cfg *aws.Config, dbFile string, localRoot string, bucket string, maxDepth int, fileSizeThreshold int) error {
+func BackupFiles(cfg *aws.Config, dbFile string, localRoot string, bucket string, sizeThreshold int64, dryRun bool) error {
+	log.Printf("size threshold: %d", sizeThreshold)
+
 	// Load the db
 	db, err := newDB(dbFile)
 	if err != nil {
@@ -26,51 +29,91 @@ func BackupFiles(cfg *aws.Config, dbFile string, localRoot string, bucket string
 	// Create an Amazon S3 service client
 	client := s3.NewFromConfig(*cfg)
 
+	// Clean up the root path, since it was user input (e.g. resolve '..' elements).
+	cleanRoot := filepath.Clean(localRoot)
+
 	log.Println("> Scanning files")
-	paths, err := getFilesToBackup(db, localRoot, maxDepth, fileSizeThreshold)
+	batches, err := getFilesToBackup(db, cleanRoot, sizeThreshold)
 	if err != nil {
 		log.Fatalf("error finding files to backup: %v", err)
 	}
 	log.Println("< Scanning files")
 
 	log.Println("> FOUND FILES")
-	for _, path := range paths {
-		if path.IsDir {
-			log.Printf("d %s", path.Path)
-			for _, file := range path.DirtySubFiles {
-				log.Printf("  %s", file)
+	for _, batch := range batches {
+		log.Printf("batch %s (%d bytes)", batch.Root, batch.Size())
+		for _, file := range batch.Files {
+			dirty := ""
+			if file.IsDirty {
+				dirty = "[dirty] "
 			}
-		} else {
-			log.Printf("f %s", path.Path)
+			log.Printf("  %s%s (%d bytes)", dirty, file.Path, file.Size())
 		}
 	}
 	log.Println("< FOUND FILES")
 
-	log.Println("> Backing up files")
-	for _, path := range paths {
-		// TODO: strip path so it's relative to the root
-		if path.IsDir {
-			log.Printf("Backing up directory: %s, dirty files:", path.Path)
-			backupDirectory(client, bucket, localRoot, path.Path, path.SubFilesToBackup)
-			for _, f := range path.DirtySubFiles {
-				markFile(db, f)
-			}
-			continue
-		}
+	if dryRun {
+		log.Println("dry run - not copying files to backup destination")
+		return nil
+	}
 
-		log.Printf("Backing up file: %s", path.Path)
-		// TODO: strip path so it's relative to the root
-		err = backupFile(client, bucket, localRoot, path.Path)
+	log.Println("> Backing up files")
+
+	// TODO: check for duplicate batches by path
+
+	for _, batch := range batches {
+		err = backupBatch(db, client, cleanRoot, bucket, batch)
 		if err != nil {
-			return fmt.Errorf("failed to backup file %q: %+v", path.Path, err)
-		}
-		err = markFile(db, path.Path)
-		if err != nil {
-			log.Fatalf("error marking file as processed: %v", err)
+			log.Fatalf("error backing up batch: %+v", err)
 		}
 	}
 	log.Println("< Backing up files")
 
+	return nil
+}
+
+func backupBatch(db *DB, client *s3.Client, root string, bucket string, batch *BackupBatch) error {
+	if len(batch.Files) == 0 {
+		return nil
+	}
+
+	if len(batch.Files) > 1 {
+		// Grab the batch name relative to the root directory.
+		relativeRoot, err := filepath.Rel(root, batch.Root)
+		if err != nil {
+			return err
+		}
+
+		var files []string
+		for _, file := range batch.Files {
+			files = append(files, file.Path)
+		}
+		log.Printf("Backing up file batch: %s, dirty files: %v", relativeRoot, files)
+
+		err = backupDirectory(client, bucket, root, batch.Root, files)
+		if err != nil {
+			return fmt.Errorf("failed to backup batch %q: %+v", batch.Root, err)
+		}
+		for _, f := range files {
+			// TODO: only mark files if they were dirty?
+			markFile(db, f)
+		}
+	} else {
+		filePath := batch.Files[0].Path
+		relativePath, err := filepath.Rel(root, filePath)
+		if err != nil {
+			return err
+		}
+		log.Printf("Backing up file: %s", relativePath)
+		err = backupFile(client, bucket, root, filePath)
+		if err != nil {
+			return fmt.Errorf("failed to backup file %q: %+v", filePath, err)
+		}
+		err = markFile(db, filePath)
+		if err != nil {
+			log.Fatalf("error marking file as processed: %v", err)
+		}
+	}
 	return nil
 }
 
@@ -149,96 +192,157 @@ func doBackupFile(path string) bool {
 	return true
 }
 
-func getFilesToBackup(db *DB, root string, maxDepth int, sizeThreshold int) ([]*BackupRequest, error) {
-	dirQueue := []QueueItem{{Path: root, Depth: 0}}
-	backupRequests := []*BackupRequest{}
+type BackupFile struct {
+	FileSize int64
+	Path     string
+	IsDirty  bool
+}
 
-	// Scan files and compare mod times
-	for len(dirQueue) > 0 {
-		dir := dirQueue[0]
-		dirQueue = dirQueue[1:]
+func (b *BackupFile) Size() int64 {
+	return b.FileSize
+}
 
-		req := &BackupRequest{
-			Path:  dir.Path,
-			IsDir: true,
-		}
+type BackupBatch struct {
+	// Root directory that the files should be relative to (i.e. where the zip file should be
+	// produced). Ignored for single-file batches.
+	Root      string
+	TotalSize int64
+	Files     []*BackupFile
+}
 
-		log.Printf("scanning dir %q depth %d", dir.Path, dir.Depth)
+func (b *BackupBatch) Size() int64 {
+	return b.TotalSize
+}
 
-		if maxDepth > 0 && dir.Depth > maxDepth {
-			// Check if directory needs backup.
-			files, err := getFilesToBackup(db, dir.Path, -1, sizeThreshold)
+type WithSize interface {
+	Size() int64
+}
+
+func sumSizes[T WithSize](arr []T) int64 {
+	sum := int64(0)
+	for _, e := range arr {
+		sum += e.Size()
+	}
+	return sum
+}
+
+// Depth-first search into this directory tree.
+// For each directory, determine the total size of all files in the tree.
+// If the sum is greater than the max, remove the largest subdirectory (mark it as to-be-zipped),
+// then repeat until we are below the max.
+func getFilesToBackup(db *DB, root string, sizeThreshold int64) ([]*BackupBatch, error) {
+	// TODO: max depth check
+
+	// Get files in directory
+	files, err := os.ReadDir(root)
+	if err != nil {
+		return nil, fmt.Errorf("error scanning directory: %v", err)
+	}
+
+	var dirFiles []*BackupFile
+	var maybeRollupBatches []*BackupBatch
+	var otherBatches []*BackupBatch
+	for _, file := range files {
+		path := filepath.Join(root, file.Name())
+		log.Printf("scanning path %q", path)
+
+		if file.IsDir() {
+			subBatches, err := getFilesToBackup(db, path, sizeThreshold)
 			if err != nil {
 				return nil, err
 			}
-			if len(files) > 0 {
-				// This is a terminal directory (i.e. we just back up the whole thing as an archive)
-				req.Recurse = true
-				for _, f := range files {
-					req.DirtySubFiles = append(req.DirtySubFiles, f.Path)
-				}
-				backupRequests = append(backupRequests, req)
+			if len(subBatches) > 1 {
+				otherBatches = append(otherBatches, subBatches...)
+			} else {
+				maybeRollupBatches = append(maybeRollupBatches, subBatches...)
 			}
-			continue
-		}
-
-		files, err := os.ReadDir(dir.Path)
-		if err != nil {
-			log.Fatalf("error scanning directory: %v", err)
-		}
-
-		for _, file := range files {
-			path := filepath.Join(dir.Path, file.Name())
-
-			if file.IsDir() {
-				dirQueue = append(dirQueue, QueueItem{
-					Path:  path,
-					Depth: dir.Depth + 1,
-				})
-				continue
-			}
-
+		} else {
 			info, err := file.Info()
 			if err != nil {
 				log.Fatal(err)
 			}
-
+			isDirty := false
 			if doBackupFile(path) {
-				dirty, err := doesFileNeedBackup(db, path, info)
+				isDirty, err = doesFileNeedBackup(db, path, info)
 				if err != nil {
 					log.Fatal(err)
 				}
-
-				log.Printf("%s (%d bytes) - %v", path, info.Size(), info.ModTime())
-				if info.Size() > int64(sizeThreshold) {
-					if dirty {
-						// If the file meets the given criteria and is dirty, back it up individually
-						backupRequests = append(backupRequests, &BackupRequest{
-							Path:  path,
-							IsDir: false,
-						})
-					} else {
-						log.Printf("%s already backed up, skipping", path)
-					}
-				} else {
-					// Make sure to include _all_ files below the individual backup threshold - if this directory
-					// contains _any_ dirty files below the size threshold, we want to make sure we include _all_
-					// of them in the archive.
-					req.SubFilesToBackup = append(req.SubFilesToBackup, path)
-					if dirty {
-						req.DirtySubFiles = append(req.DirtySubFiles, path)
-					}
-				}
-			} else {
-				log.Printf("skipping file %s", path)
 			}
-		}
-
-		if len(req.DirtySubFiles) > 0 {
-			backupRequests = append(backupRequests, req)
-		} else {
-			log.Printf("directory %q has no dirty files, skipping", req.Path)
+			dirFiles = append(dirFiles, &BackupFile{
+				Path:     path,
+				FileSize: info.Size(),
+				IsDirty:  isDirty,
+			})
+			log.Printf("  found file %q", path)
 		}
 	}
-	return backupRequests, nil
+
+	var outputBatches []*BackupBatch
+
+	// Start by rolling up the files at the current directory's level.
+	sum := sumSizes(dirFiles)
+	if sum <= sizeThreshold {
+		// Just send them all as a zip file
+		outputBatches = append(outputBatches, &BackupBatch{
+			Root:      root,
+			TotalSize: sum,
+			Files:     dirFiles,
+		})
+	} else {
+		// Sort files by size descending
+		sort.Slice(dirFiles, func(i, j int) bool {
+			// Intentionally use > so the sort is reversed
+			return dirFiles[i].Size() > dirFiles[j].Size()
+		})
+		// Pop individual files off the stack until we find one that's below
+		// the limit, then send all the rest in a zip file.
+		for sum > sizeThreshold && len(dirFiles) > 0 {
+			outputBatches = append(outputBatches, &BackupBatch{
+				Files:     []*BackupFile{dirFiles[0]},
+				TotalSize: dirFiles[0].Size(),
+			})
+			sum -= dirFiles[0].Size()
+			dirFiles = dirFiles[1:]
+		}
+		// Add the remaining files as a batch
+		outputBatches = append(outputBatches, &BackupBatch{
+			Root:      root,
+			Files:     dirFiles,
+			TotalSize: sum,
+		})
+	}
+
+	// If there's only one output batch so far, then we're able to zip up all the files and still be
+	// under the threshold. Check if we can also roll the subdirectories in.
+	if len(outputBatches) == 1 {
+		// This means none of the subdirectories was large enough to split it up, so the entire tree
+		// is below the size threshold. Attempt to roll up all subdirectories along with the files at
+		// the current directory level.
+		if len(otherBatches) == 0 {
+			subdirSize := sumSizes(maybeRollupBatches)
+			totalSize := subdirSize + outputBatches[0].Size()
+			if totalSize <= sizeThreshold {
+				// If the total is still below the threshold, jam everything into one big batch.
+				allFiles := outputBatches[0].Files
+				for _, batch := range maybeRollupBatches {
+					allFiles = append(allFiles, batch.Files...)
+				}
+				outputBatches = []*BackupBatch{
+					{
+						Root:      root,
+						Files:     allFiles,
+						TotalSize: totalSize,
+					},
+				}
+				return outputBatches, nil
+			}
+		}
+	}
+
+	// If we've gotten this far, then the tree at this directory level and below is larger than the
+	// threshold, so we need to pass up the batches from all subdirectories as is.
+	outputBatches = append(outputBatches, otherBatches...)
+	outputBatches = append(outputBatches, maybeRollupBatches...)
+
+	return outputBatches, nil
 }
