@@ -100,6 +100,18 @@ func backupBatch(
 	for _, file := range batch.Files {
 		if file.IsDirty {
 			anyDirty = true
+		} else {
+			// Check if this file has moved to a different batch (potentially due to other files changing
+			// the batching structure). In this case even if the file is unchanged, we want to update it,
+			// so our backup structure is fully up to date.
+			changed, err := fileHasChangedBatch(db, file.Path, batch.Root)
+			if err != nil {
+				return fmt.Errorf("failed to check if file has changed batch %q: %v", file, err)
+			}
+			if changed {
+				logger.Debugf("file %q has changed batches", file)
+				anyDirty = true
+			}
 		}
 	}
 	if !anyDirty {
@@ -126,7 +138,7 @@ func backupBatch(
 		}
 		for _, f := range files {
 			// TODO: only mark files if they were dirty?
-			markFile(db, f)
+			markFile(db, f, batch.Root)
 		}
 	} else {
 		filePath := batch.Files[0].Path
@@ -139,7 +151,8 @@ func backupBatch(
 		if err != nil {
 			return fmt.Errorf("failed to backup file %q: %+v", filePath, err)
 		}
-		err = markFile(db, filePath)
+		// Empty string signifies that this file was not in a batch and was backed up individually
+		err = markFile(db, filePath, "")
 		if err != nil {
 			log.Fatalf("error marking file as processed: %v", err)
 		}
@@ -147,7 +160,7 @@ func backupBatch(
 	return nil
 }
 
-func markFile(db *DB, path string) error {
+func markFile(db *DB, path string, batch string) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		log.Fatalf("error stat-ing file: %v", err)
@@ -157,7 +170,7 @@ func markFile(db *DB, path string) error {
 		log.Fatalf("error hashing file: %v", err)
 	}
 
-	return db.MarkFile(path, info.ModTime(), hash)
+	return db.MarkFile(path, info.ModTime(), hash, batch)
 }
 
 func getFileHash(path string) (string, error) {
@@ -175,6 +188,21 @@ func getFileHash(path string) (string, error) {
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
+func fileHasChangedBatch(db *DB, path string, batch string) (bool, error) {
+	fi, err := db.GetFileInfo(path)
+	if err != nil && err != sql.ErrNoRows {
+		return false, err
+	}
+
+	if err == sql.ErrNoRows {
+		// If we have no record of the file, say it's changed batches (shouldn't matter because in the
+		// calling code we'll also mark the file as new).
+		return true, nil
+	}
+
+	return batch != fi.Batch, nil
+}
+
 func doesFileNeedBackup(db *DB, path string, info fs.FileInfo) (bool, error) {
 	fi, err := db.GetFileInfo(path)
 	if err != nil && err != sql.ErrNoRows {
@@ -184,18 +212,23 @@ func doesFileNeedBackup(db *DB, path string, info fs.FileInfo) (bool, error) {
 	if err == sql.ErrNoRows {
 		return true, nil
 	}
-	if !info.ModTime().Truncate(time.Millisecond).After(fi.ModTime.Truncate(time.Millisecond)) {
-		return false, nil
-	}
+
+	modTimeChanged := !info.ModTime().Truncate(time.Millisecond).Equal(fi.ModTime.Truncate(time.Millisecond))
 
 	hash, err := getFileHash(path)
 	if err != nil {
 		return false, err
 	}
-	if hash == fi.Hash {
+	hashChanged := hash != fi.Hash
+
+	// Only hold off updating the file if:
+	//   - Its mod time is the same
+	//   - Its hash is the same
+	// Otherwise default to uploading the file, because we'd rather send some duplicative data than
+	// not back up a file.
+	if !modTimeChanged && !hashChanged {
 		return false, nil
 	}
-
 	return true, nil
 }
 
@@ -310,62 +343,71 @@ func getFilesToBackup(db *DB, root string, sizeThreshold int64) ([]*BackupBatch,
 	var outputBatches []*BackupBatch
 
 	// Start by rolling up the files at the current directory's level.
-	sum := sumSizes(dirFiles)
-	if sum <= sizeThreshold {
-		// Just send them all as a zip file
-		outputBatches = append(outputBatches, &BackupBatch{
-			Root:      root,
-			TotalSize: sum,
-			Files:     dirFiles,
-		})
-	} else {
-		// Sort files by size descending
-		sort.Slice(dirFiles, func(i, j int) bool {
-			// Intentionally use > so the sort is reversed
-			return dirFiles[i].Size() > dirFiles[j].Size()
-		})
-		// Pop individual files off the stack until we find one that's below
-		// the limit, then send all the rest in a zip file.
-		for sum > sizeThreshold && len(dirFiles) > 0 {
+	if len(dirFiles) > 0 {
+		sum := sumSizes(dirFiles)
+		if sum <= sizeThreshold {
+			// Just send them all as a zip file
 			outputBatches = append(outputBatches, &BackupBatch{
-				Files:     []*BackupFile{dirFiles[0]},
-				TotalSize: dirFiles[0].Size(),
+				Root:      root,
+				TotalSize: sum,
+				Files:     dirFiles,
 			})
-			sum -= dirFiles[0].Size()
-			dirFiles = dirFiles[1:]
+		} else {
+			// Sort files by size descending
+			sort.Slice(dirFiles, func(i, j int) bool {
+				// Intentionally use > so the sort is reversed
+				return dirFiles[i].Size() > dirFiles[j].Size()
+			})
+			// Pop individual files off the stack until we find one that's below
+			// the limit, then send all the rest in a zip file.
+			for sum > sizeThreshold && len(dirFiles) > 0 {
+				outputBatches = append(outputBatches, &BackupBatch{
+					Files:     []*BackupFile{dirFiles[0]},
+					TotalSize: dirFiles[0].Size(),
+				})
+				sum -= dirFiles[0].Size()
+				dirFiles = dirFiles[1:]
+			}
+			// Add the remaining files as a batch
+			outputBatches = append(outputBatches, &BackupBatch{
+				Root:      root,
+				Files:     dirFiles,
+				TotalSize: sum,
+			})
 		}
-		// Add the remaining files as a batch
-		outputBatches = append(outputBatches, &BackupBatch{
-			Root:      root,
-			Files:     dirFiles,
-			TotalSize: sum,
-		})
 	}
 
-	// If there's only one output batch so far, then we're able to zip up all the files and still be
-	// under the threshold. Check if we can also roll the subdirectories in.
-	if len(outputBatches) == 1 {
+	if
+	// If there's only one (or no) output batch so far, then we're able to zip up all the files and
+	// still be under the threshold. Check if we can also roll the subdirectories in.
+	len(outputBatches) <= 1 &&
+		// If there are no sub-batches to roll up, don't bother.
+		len(maybeRollupBatches) > 0 &&
 		// This means none of the subdirectories was large enough to split it up, so the entire tree
 		// is below the size threshold. Attempt to roll up all subdirectories along with the files at
 		// the current directory level.
-		if len(otherBatches) == 0 {
-			subdirSize := sumSizes(maybeRollupBatches)
-			totalSize := subdirSize + outputBatches[0].Size()
-			if totalSize <= sizeThreshold {
-				// If the total is still below the threshold, jam everything into one big batch.
-				allFiles := outputBatches[0].Files
-				for _, batch := range maybeRollupBatches {
-					allFiles = append(allFiles, batch.Files...)
-				}
-				outputBatches = []*BackupBatch{
-					{
-						Root:      root,
-						Files:     allFiles,
-						TotalSize: totalSize,
-					},
-				}
-				return outputBatches, nil
+		len(otherBatches) == 0 {
+		totalSize := sumSizes(maybeRollupBatches)
+		if len(outputBatches) > 0 {
+			outputBatches[0].Size()
+		}
+		if totalSize <= sizeThreshold {
+			// If the total is still below the threshold, jam everything into one big batch.
+			var allFiles []*BackupFile
+			if len(outputBatches) > 0 {
+				allFiles = outputBatches[0].Files
 			}
+			for _, batch := range maybeRollupBatches {
+				allFiles = append(allFiles, batch.Files...)
+			}
+			outputBatches = []*BackupBatch{
+				{
+					Root:      root,
+					Files:     allFiles,
+					TotalSize: totalSize,
+				},
+			}
+			return outputBatches, nil
 		}
 	}
 

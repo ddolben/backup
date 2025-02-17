@@ -22,6 +22,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
+// TODO: test file deletion when it _doesn't_ change the batching strategy
+// TODO: test that changing the size threshold doesn't mess anything up
+
 const minioUrl = "http://minio:9000"
 
 func init() {
@@ -103,7 +106,31 @@ func compareFiles(file1, file2 string) bool {
 }
 
 func compareDirectories(baseDir string, recoveryDir string, t *testing.T) {
-	err := filepath.WalkDir(baseDir, func(path string, d fs.DirEntry, err error) error {
+	// Track all seen files so we also get a deletion check.
+	unexpectedFiles := make(map[string]struct{})
+	err := filepath.WalkDir(recoveryDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() {
+			// Skip directories
+			return nil
+		}
+
+		relativePath, err := filepath.Rel(recoveryDir, path)
+		if err != nil {
+			return err
+		}
+
+		unexpectedFiles[relativePath] = struct{}{}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("error tracking unexpected files %+v", err)
+	}
+
+	err = filepath.WalkDir(baseDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -123,6 +150,7 @@ func compareDirectories(baseDir string, recoveryDir string, t *testing.T) {
 		if err != nil {
 			return err
 		}
+		delete(unexpectedFiles, relativePath)
 		if !compareFiles(path, filepath.Join(recoveryDir, relativePath)) {
 			t.Errorf("files are not equal: %q", relativePath)
 			return fmt.Errorf("files are not equal: %q", relativePath)
@@ -132,6 +160,10 @@ func compareDirectories(baseDir string, recoveryDir string, t *testing.T) {
 
 	if err != nil {
 		t.Fatalf("%+v", err)
+	}
+
+	if len(unexpectedFiles) > 0 {
+		t.Fatalf("found unexpected files in recovery directory: %+v", unexpectedFiles)
 	}
 }
 
@@ -166,6 +198,9 @@ func clearBucket(client *s3.Client, bucket string) error {
 
 type roundTripTestConfig struct {
 	SizeThreshold int64
+	// If true, doesn't clear out the S3 bucket's contents. Useful for running multiple tests in a row
+	// to validate dirty checks.
+	LeaveBucketContents bool
 }
 
 func getDefaultTestConfig() *roundTripTestConfig {
@@ -173,6 +208,11 @@ func getDefaultTestConfig() *roundTripTestConfig {
 		SizeThreshold: 10,
 	}
 }
+
+const (
+	bucket = "test-bucket"
+	prefix = "automated-test"
+)
 
 func roundTripTest(testBaseDir string, testConfig *roundTripTestConfig, t *testing.T) {
 	testRecoveryDir, err := os.MkdirTemp("/tmp", "dave-recovery-test-")
@@ -184,11 +224,11 @@ func roundTripTest(testBaseDir string, testConfig *roundTripTestConfig, t *testi
 
 	cfg := backup.GetMinioConfig(minioUrl)
 	dbFile := filepath.Join(testBaseDir, "backup.db")
-	bucket := "test-bucket"
-	prefix := "automated-test"
 
-	client := s3.NewFromConfig(*cfg)
-	must(clearBucket(client, bucket))
+	if !testConfig.LeaveBucketContents {
+		client := s3.NewFromConfig(*cfg)
+		must(clearBucket(client, bucket))
+	}
 
 	logger := &logging.DefaultLogger{
 		Level: logging.Debug,
@@ -290,7 +330,7 @@ func TestRoundTripWithDeepSubdirectoriesBeyondThreshold(t *testing.T) {
 	roundTripTest(testBaseDir, getDefaultTestConfig(), t)
 }
 
-func TestRoundTripWithLargeSizeThreshold(t *testing.T) {
+func TestRoundTrip_WithLargeSizeThreshold(t *testing.T) {
 	// Create test directory and write a bunch of files
 	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
 	must(err)
@@ -305,9 +345,34 @@ func TestRoundTripWithLargeSizeThreshold(t *testing.T) {
 
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/one/two/three/a.txt"), 5))
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/four/five/six/b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/four/five/six/big.txt"), 2000))
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/seven/eight/nine/c.txt"), 25))
 
 	config := getDefaultTestConfig()
-	config.SizeThreshold = 1000000
+	config.SizeThreshold = 1000
 	roundTripTest(testBaseDir, config, t)
+
+	// Remove the large file down the three, causing the entire directory hierarchy to collapse into
+	// one batch. Also tests that file deletion is working properly.
+	must(os.Remove(filepath.Join(testBaseDir, "subdir-1/four/five/six/big.txt")))
+
+	// Run the test again, _without_ clearing the bucket (so we effectively get the same behavior as a
+	// non-fresh run in real life).
+	config.LeaveBucketContents = true
+	roundTripTest(testBaseDir, config, t)
+
+	// Check manually for extraneous S3 files. There should now only be one in this prefix, since the
+	// smaller batches from the first run should have been cleaned up.
+	cfg := backup.GetMinioConfig(minioUrl)
+	client := s3.NewFromConfig(*cfg)
+	output, err := client.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
+		Bucket: aws.String(bucket),
+		Prefix: aws.String(prefix),
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if len(output.Contents) > 1 {
+		t.Fatalf("expected just 1 S3 file, got: %+v", output.Contents)
+	}
 }
