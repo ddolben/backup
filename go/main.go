@@ -4,6 +4,7 @@ import (
 	"flag"
 
 	"local/backup/backup"
+	"local/backup/logging"
 )
 
 func main() {
@@ -13,13 +14,24 @@ func main() {
 	fBucket := flag.String("bucket", "test-bucket", "S3 bucket")
 	fDoRecover := flag.Bool("recover", false, "If true, recovers FROM the remote location TO the local location")
 	fDryRun := flag.Bool("dry_run", true, "if true, print a plan and don't actually send any files to the backup destination")
+	fLogLevel := flag.String("log_level", "info", "controls logging verbosity")
 	flag.Parse()
 
 	cfg := backup.GetMinioConfig("http://localhost:9000")
 
+	logger := &logging.DefaultLogger{
+		Level: logging.Info,
+	}
+	switch *fLogLevel {
+	case "debug":
+		logger.Level = logging.Debug
+	case "verbose":
+		logger.Level = logging.Verbose
+	}
+
 	if *fDoRecover {
 		backup.RecoverFiles(cfg, *fBucket, *fRootDir)
 	} else {
-		backup.BackupFiles(cfg, *fMetaDb, *fRootDir, *fBucket, *fSizeThreshold, *fDryRun)
+		backup.BackupFiles(logger, cfg, *fMetaDb, *fRootDir, *fBucket, *fSizeThreshold, *fDryRun)
 	}
 }

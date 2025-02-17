@@ -14,11 +14,13 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+
+	"local/backup/logging"
 )
 
 // TODO: return errors rather than Fatal-ing
-func BackupFiles(cfg *aws.Config, dbFile string, localRoot string, bucket string, sizeThreshold int64, dryRun bool) error {
-	log.Printf("size threshold: %d", sizeThreshold)
+func BackupFiles(logger logging.Logger, cfg *aws.Config, dbFile string, localRoot string, bucket string, sizeThreshold int64, dryRun bool) error {
+	logger.Debugf("size threshold: %d", sizeThreshold)
 
 	// Load the db
 	db, err := newDB(dbFile)
@@ -32,47 +34,47 @@ func BackupFiles(cfg *aws.Config, dbFile string, localRoot string, bucket string
 	// Clean up the root path, since it was user input (e.g. resolve '..' elements).
 	cleanRoot := filepath.Clean(localRoot)
 
-	log.Println("> Scanning files")
+	logger.Infof("> Scanning files")
 	batches, err := getFilesToBackup(db, cleanRoot, sizeThreshold)
 	if err != nil {
 		log.Fatalf("error finding files to backup: %v", err)
 	}
-	log.Println("< Scanning files")
+	logger.Infof("< Scanning files")
 
-	log.Println("> FOUND FILES")
+	logger.Verbosef("> Found files")
 	for _, batch := range batches {
-		log.Printf("batch %s (%d bytes)", batch.Root, batch.Size())
+		logger.Verbosef("batch %s (%d bytes)", batch.Root, batch.Size())
 		for _, file := range batch.Files {
 			dirty := ""
 			if file.IsDirty {
 				dirty = "[dirty] "
 			}
-			log.Printf("  %s%s (%d bytes)", dirty, file.Path, file.Size())
+			logger.Verbosef("  %s%s (%d bytes)", dirty, file.Path, file.Size())
 		}
 	}
-	log.Println("< FOUND FILES")
+	logger.Verbosef("< Found files")
 
 	if dryRun {
-		log.Println("dry run - not copying files to backup destination")
+		logger.Infof("dry run - not copying files to backup destination")
 		return nil
 	}
 
-	log.Println("> Backing up files")
+	logger.Infof("> Backing up files")
 
 	// TODO: check for duplicate batches by path
 
 	for _, batch := range batches {
-		err = backupBatch(db, client, cleanRoot, bucket, batch)
+		err = backupBatch(logger, db, client, cleanRoot, bucket, batch)
 		if err != nil {
 			log.Fatalf("error backing up batch: %+v", err)
 		}
 	}
-	log.Println("< Backing up files")
+	logger.Infof("< Backing up files")
 
 	return nil
 }
 
-func backupBatch(db *DB, client *s3.Client, root string, bucket string, batch *BackupBatch) error {
+func backupBatch(logger logging.Logger, db *DB, client *s3.Client, root string, bucket string, batch *BackupBatch) error {
 	if len(batch.Files) == 0 {
 		return nil
 	}
@@ -88,7 +90,7 @@ func backupBatch(db *DB, client *s3.Client, root string, bucket string, batch *B
 		for _, file := range batch.Files {
 			files = append(files, file.Path)
 		}
-		log.Printf("Backing up file batch: %s, dirty files: %v", relativeRoot, files)
+		logger.Verbosef("Backing up file batch: %s, dirty files: %v", relativeRoot, files)
 
 		err = backupDirectory(client, bucket, root, batch.Root, files)
 		if err != nil {
@@ -104,7 +106,7 @@ func backupBatch(db *DB, client *s3.Client, root string, bucket string, batch *B
 		if err != nil {
 			return err
 		}
-		log.Printf("Backing up file: %s", relativePath)
+		logger.Verbosef("Backing up file: %s", relativePath)
 		err = backupFile(client, bucket, root, filePath)
 		if err != nil {
 			return fmt.Errorf("failed to backup file %q: %+v", filePath, err)
@@ -257,16 +259,16 @@ func getFilesToBackup(db *DB, root string, sizeThreshold int64) ([]*BackupBatch,
 				maybeRollupBatches = append(maybeRollupBatches, subBatches...)
 			}
 		} else {
+			if !doBackupFile(path) {
+				continue
+			}
 			info, err := file.Info()
 			if err != nil {
 				log.Fatal(err)
 			}
-			isDirty := false
-			if doBackupFile(path) {
-				isDirty, err = doesFileNeedBackup(db, path, info)
-				if err != nil {
-					log.Fatal(err)
-				}
+			isDirty, err := doesFileNeedBackup(db, path, info)
+			if err != nil {
+				log.Fatal(err)
 			}
 			dirFiles = append(dirFiles, &BackupFile{
 				Path:     path,
