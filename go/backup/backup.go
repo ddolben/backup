@@ -96,6 +96,17 @@ func backupBatch(
 		return nil
 	}
 
+	anyDirty := false
+	for _, file := range batch.Files {
+		if file.IsDirty {
+			anyDirty = true
+		}
+	}
+	if !anyDirty {
+		logger.Verbosef("no dirty files in batch, skipping: %q", batch.Root)
+		return nil
+	}
+
 	if len(batch.Files) > 1 {
 		// Grab the batch name relative to the root directory.
 		relativeRoot, err := filepath.Rel(root, batch.Root)
