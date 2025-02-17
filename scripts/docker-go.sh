@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-image_name="golang:1.20"
-container_name="go-1.20"
+image_name="golang:1.23"
+container_name="go-1.23"
 
 do_create=true
 do_attach=true
