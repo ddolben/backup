@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"context"
 	"crypto/md5"
 	"database/sql"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
 	"local/backup/logging"
 )
@@ -44,9 +46,13 @@ func BackupFiles(
 	cleanRoot := filepath.Clean(localRoot)
 
 	logger.Infof("> Scanning files")
-	batches, err := getFilesToBackup(db, cleanRoot, sizeThreshold)
+	batches, err := getFilesToBackup(db, cleanRoot, cleanRoot, sizeThreshold)
 	if err != nil {
 		log.Fatalf("error finding files to backup: %v", err)
+	}
+	batchesToDelete, err := getBatchesToDelete(db, batches)
+	if err != nil {
+		log.Fatalf("error finding batches to delete: %v", err)
 	}
 	logger.Infof("< Scanning files")
 
@@ -60,6 +66,10 @@ func BackupFiles(
 			}
 			logger.Verbosef("  %s%s (%d bytes)", dirty, file.Path, file.Size())
 		}
+	}
+	logger.Verbosef(("batches to delete:"))
+	for _, batch := range batchesToDelete {
+		logger.Verbosef("  %s (%b)", batch.Path, batch.IsSingleFile)
 	}
 	logger.Verbosef("< Found files")
 
@@ -79,6 +89,15 @@ func BackupFiles(
 		}
 	}
 	logger.Infof("< Backing up files")
+
+	logger.Infof("> Clearing unnecessary batches")
+	for _, batch := range batchesToDelete {
+		err = deleteBatch(logger, db, client, cleanRoot, bucket, prefix, batch)
+		if err != nil {
+			log.Fatalf("error deleting batch: %+v", err)
+		}
+	}
+	logger.Infof("< Clearing unnecessary batches")
 
 	return nil
 }
@@ -104,9 +123,9 @@ func backupBatch(
 			// Check if this file has moved to a different batch (potentially due to other files changing
 			// the batching structure). In this case even if the file is unchanged, we want to update it,
 			// so our backup structure is fully up to date.
-			changed, err := fileHasChangedBatch(db, file.Path, batch.Root)
+			changed, err := fileHasChangedBatch(db, root, file.Path, batch.Root)
 			if err != nil {
-				return fmt.Errorf("failed to check if file has changed batch %q: %v", file, err)
+				return fmt.Errorf("failed to check if file has changed batch %q: %v", file.Path, err)
 			}
 			if changed {
 				logger.Debugf("file %q has changed batches", file)
@@ -120,19 +139,13 @@ func backupBatch(
 	}
 
 	if len(batch.Files) > 1 {
-		// Grab the batch name relative to the root directory.
-		relativeRoot, err := filepath.Rel(root, batch.Root)
-		if err != nil {
-			return err
-		}
-
 		var files []string
 		for _, file := range batch.Files {
 			files = append(files, file.Path)
 		}
-		logger.Verbosef("Backing up file batch: %s, dirty files: %v", relativeRoot, files)
+		logger.Verbosef("Backing up file batch: %s, dirty files: %v", batch.Root, files)
 
-		err = backupDirectory(client, bucket, prefix, root, batch.Root, files)
+		err := backupDirectory(client, bucket, prefix, root, batch.Root, files)
 		if err != nil {
 			return fmt.Errorf("failed to backup batch %q: %+v", batch.Root, err)
 		}
@@ -141,21 +154,53 @@ func backupBatch(
 			markFile(db, f, batch.Root)
 		}
 	} else {
+		logger.Verbosef("Backing up file: %s", batch.Root)
 		filePath := batch.Files[0].Path
-		relativePath, err := filepath.Rel(root, filePath)
-		if err != nil {
-			return err
-		}
-		logger.Verbosef("Backing up file: %s", relativePath)
-		err = backupFile(client, bucket, prefix, root, filePath)
+		err := backupFile(client, bucket, prefix, root, filePath)
 		if err != nil {
 			return fmt.Errorf("failed to backup file %q: %+v", filePath, err)
 		}
-		// Empty string signifies that this file was not in a batch and was backed up individually
-		err = markFile(db, filePath, "")
+		// Root == file path signifies that this file was not in a batch and was backed up individually
+		err = markFile(db, filePath, batch.Root)
 		if err != nil {
 			log.Fatalf("error marking file as processed: %v", err)
 		}
+	}
+	)))))))) // File paths in the DB must be relative - should have changed all of the write codepath to handle this but tests are still failing
+	return nil
+}
+
+func deleteBatch(
+	logger logging.Logger,
+	db *DB,
+	client *s3.Client,
+	root string,
+	bucket string,
+	prefix string,
+	batch BatchMeta,
+) error {
+	keyPath := filepath.Join(prefix, batch.Path)
+	if !batch.IsSingleFile {
+		// If it's a directory, delete the archive
+		keyPath = filepath.Join(keyPath, "_files.tar.gz")
+	}
+	// Otherwise, the batch name is the filename, so just delete that directly
+
+	logger.Debugf("deleting S3 file %q", keyPath)
+	return nil
+
+	_, err := client.DeleteObjects(context.TODO(), &s3.DeleteObjectsInput{
+		Bucket: aws.String(bucket),
+		Delete: &types.Delete{
+			Objects: []types.ObjectIdentifier{
+				{
+					Key: aws.String(keyPath),
+				},
+			},
+		},
+	})
+	if err != nil {
+		return err
 	}
 	return nil
 }
@@ -188,8 +233,9 @@ func getFileHash(path string) (string, error) {
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
-func fileHasChangedBatch(db *DB, path string, batch string) (bool, error) {
-	fi, err := db.GetFileInfo(path)
+func fileHasChangedBatch(db *DB, root string, path string, batch string) (bool, error) {
+	absolutePath := filepath.Join(root, path)
+	fi, err := db.GetFileInfo(absolutePath)
 	if err != nil && err != sql.ErrNoRows {
 		return false, err
 	}
@@ -266,8 +312,8 @@ func (b *BackupFile) Size() int64 {
 }
 
 type BackupBatch struct {
-	// Root directory that the files should be relative to (i.e. where the zip file should be
-	// produced). Ignored for single-file batches.
+	// For multi-file batches, the root directory that the files should be relative to (i.e. where the
+	// zip file should be produced). For single-file batches, it's just the filename.
 	Root      string
 	TotalSize int64
 	Files     []*BackupFile
@@ -293,11 +339,9 @@ func sumSizes[T WithSize](arr []T) int64 {
 // For each directory, determine the total size of all files in the tree.
 // If the sum is greater than the max, remove the largest subdirectory (mark it as to-be-zipped),
 // then repeat until we are below the max.
-func getFilesToBackup(db *DB, root string, sizeThreshold int64) ([]*BackupBatch, error) {
-	// TODO: max depth check
-
+func getFilesToBackup(db *DB, root string, searchPath string, sizeThreshold int64) ([]*BackupBatch, error) {
 	// Get files in directory
-	files, err := os.ReadDir(root)
+	files, err := os.ReadDir(searchPath)
 	if err != nil {
 		return nil, fmt.Errorf("error scanning directory: %v", err)
 	}
@@ -306,11 +350,11 @@ func getFilesToBackup(db *DB, root string, sizeThreshold int64) ([]*BackupBatch,
 	var maybeRollupBatches []*BackupBatch
 	var otherBatches []*BackupBatch
 	for _, file := range files {
-		path := filepath.Join(root, file.Name())
+		path := filepath.Join(searchPath, file.Name())
 		log.Printf("scanning path %q", path)
 
 		if file.IsDir() {
-			subBatches, err := getFilesToBackup(db, path, sizeThreshold)
+			subBatches, err := getFilesToBackup(db, root, path, sizeThreshold)
 			if err != nil {
 				return nil, err
 			}
@@ -331,8 +375,13 @@ func getFilesToBackup(db *DB, root string, sizeThreshold int64) ([]*BackupBatch,
 			if err != nil {
 				log.Fatal(err)
 			}
+			// Use relative paths for the files in the batch.
+			relPath, err := filepath.Rel(root, path)
+			if err != nil {
+				log.Fatal(err)
+			}
 			dirFiles = append(dirFiles, &BackupFile{
-				Path:     path,
+				Path:     relPath,
 				FileSize: info.Size(),
 				IsDirty:  isDirty,
 			})
@@ -342,13 +391,19 @@ func getFilesToBackup(db *DB, root string, sizeThreshold int64) ([]*BackupBatch,
 
 	var outputBatches []*BackupBatch
 
+	// Use the path relative to the directory root as the batch name
+	relativeRoot, err := filepath.Rel(root, searchPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get relative path: %v", err)
+	}
+
 	// Start by rolling up the files at the current directory's level.
 	if len(dirFiles) > 0 {
 		sum := sumSizes(dirFiles)
 		if sum <= sizeThreshold {
 			// Just send them all as a zip file
 			outputBatches = append(outputBatches, &BackupBatch{
-				Root:      root,
+				Root:      relativeRoot,
 				TotalSize: sum,
 				Files:     dirFiles,
 			})
@@ -361,7 +416,12 @@ func getFilesToBackup(db *DB, root string, sizeThreshold int64) ([]*BackupBatch,
 			// Pop individual files off the stack until we find one that's below
 			// the limit, then send all the rest in a zip file.
 			for sum > sizeThreshold && len(dirFiles) > 0 {
+				relativePath, err := filepath.Rel(root, dirFiles[0].Path)
+				if err != nil {
+					return nil, fmt.Errorf("failed to get relative path: %v", err)
+				}
 				outputBatches = append(outputBatches, &BackupBatch{
+					Root:      relativePath,
 					Files:     []*BackupFile{dirFiles[0]},
 					TotalSize: dirFiles[0].Size(),
 				})
@@ -370,7 +430,7 @@ func getFilesToBackup(db *DB, root string, sizeThreshold int64) ([]*BackupBatch,
 			}
 			// Add the remaining files as a batch
 			outputBatches = append(outputBatches, &BackupBatch{
-				Root:      root,
+				Root:      relativeRoot,
 				Files:     dirFiles,
 				TotalSize: sum,
 			})
@@ -402,7 +462,7 @@ func getFilesToBackup(db *DB, root string, sizeThreshold int64) ([]*BackupBatch,
 			}
 			outputBatches = []*BackupBatch{
 				{
-					Root:      root,
+					Root:      relativeRoot,
 					Files:     allFiles,
 					TotalSize: totalSize,
 				},
@@ -417,4 +477,37 @@ func getFilesToBackup(db *DB, root string, sizeThreshold int64) ([]*BackupBatch,
 	outputBatches = append(outputBatches, maybeRollupBatches...)
 
 	return outputBatches, nil
+}
+
+func getBatchesToDelete(db *DB, batches []*BackupBatch) ([]BatchMeta, error) {
+	// Find all batches in the backup plan (dirty or not)
+	var plannedBatches []string
+	for _, batch := range batches {
+		plannedBatches = append(plannedBatches, batch.Root)
+	}
+
+	if err := db.DumpDB(); err != nil {
+		panic(err)
+	}
+
+	// Find all batches currently in the backup (scan of the db)
+	existingBatches, err := db.GetExistingBatches()
+	if err != nil {
+		return nil, fmt.Errorf("error fetching existing batches from db: %v", err)
+	}
+
+	// Find all batches in the backup but not the backup plan
+	existingBatchSet := make(map[string]BatchMeta)
+	for _, b := range existingBatches {
+		existingBatchSet[b.Path] = b
+	}
+	for _, b := range plannedBatches {
+		delete(existingBatchSet, b)
+	}
+	var batchesToDelete []BatchMeta
+	for _, b := range existingBatchSet {
+		batchesToDelete = append(batchesToDelete, b)
+	}
+
+	return batchesToDelete, nil
 }

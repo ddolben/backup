@@ -26,21 +26,17 @@ func backupFile(client *s3.Client, bucket string, prefix string, localRoot strin
 	return s3_helpers.UploadFile(client, bucket, key, localPath)
 }
 
-// https://www.arthurkoziel.com/writing-tar-gz-files-in-go/
+// Mostly from https://www.arthurkoziel.com/writing-tar-gz-files-in-go/
 func backupDirectory(
 	client *s3.Client,
 	bucket string,
 	prefix string,
 	localRoot string,
+	// This should be relative to the root
 	localPath string,
 	files []string,
 ) error {
-	keyBase, err := filepath.Rel(localRoot, localPath)
-	if err != nil {
-		return err
-	}
-
-	key := filepath.Join(prefix, keyBase, "_files.tar.gz")
+	key := filepath.Join(prefix, localPath, "_files.tar.gz")
 	log.Printf("backing up directory %q -> %q", localPath, key)
 
 	// Create a buffer to write the files into
@@ -53,7 +49,9 @@ func backupDirectory(
 	// Scan all the specified files and back them up to the archive.
 	for _, filename := range files {
 		log.Printf("  archiving file %q", filename)
-		if err := addFileToArchive(tw, localPath, filename); err != nil {
+		absoluteArchiveRoot := filepath.Join(localRoot, localPath)
+		absoluteFilename := filepath.Join(localRoot, filename)
+		if err := addFileToArchive(tw, absoluteArchiveRoot, absoluteFilename); err != nil {
 			return fmt.Errorf("failed to add file %q to archive: %+v", filename, err)
 		}
 	}
@@ -70,7 +68,7 @@ func backupDirectory(
 	}
 
 	// Write the results of the buffer to s3
-	_, err = client.PutObject(context.TODO(), &s3.PutObjectInput{
+	_, err := client.PutObject(context.TODO(), &s3.PutObjectInput{
 		Bucket: &bucket,
 		Key:    &key,
 		// TODO: is this optimal?
