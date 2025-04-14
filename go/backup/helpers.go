@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"local/backup/s3_helpers"
 	"log"
 	"os"
 	"path/filepath"
@@ -16,12 +15,43 @@ import (
 )
 
 func backupFile(client *s3.Client, bucket string, prefix string, localRoot string, localPath string) error {
-	key := localPath
+	key := localPath + ".tar.gz"
 	key = filepath.Join(prefix, key)
 	absolutePath := filepath.Join(localRoot, localPath)
+	absoluteArchiveRoot := filepath.Dir(absolutePath)
 
 	log.Printf("backing up file %q to %q", localPath, key)
-	return s3_helpers.UploadFile(client, bucket, key, absolutePath)
+
+	// Create a buffer to write the file into
+	buf := &bytes.Buffer{}
+
+	// Streams for tar archive and gzip
+	gw := gzip.NewWriter(buf)
+	tw := tar.NewWriter(gw)
+
+	// Add the single file to the archive
+	if err := addFileToArchive(tw, absoluteArchiveRoot, absolutePath); err != nil {
+		return fmt.Errorf("failed to add file %q to archive: %+v", localPath, err)
+	}
+
+	// Close writers to complete the archive
+	if err := tw.Close(); err != nil {
+		return fmt.Errorf("failed to close tar writer: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		return fmt.Errorf("failed to close gzip writer: %v", err)
+	}
+
+	// Write the results of the buffer to s3
+	_, err := client.PutObject(context.TODO(), &s3.PutObjectInput{
+		Bucket: &bucket,
+		Key:    &key,
+		Body:   bytes.NewReader(buf.Bytes()),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to upload file %q to %q: %v", localPath, key, err)
+	}
+	return nil
 }
 
 // Mostly from https://www.arthurkoziel.com/writing-tar-gz-files-in-go/
@@ -31,11 +61,11 @@ func backupDirectory(
 	prefix string,
 	localRoot string,
 	// This should be relative to the root
-	localPath string,
+	localBatchRoot string,
 	files []string,
 ) error {
-	key := filepath.Join(prefix, localPath, "_files.tar.gz")
-	log.Printf("backing up directory %q -> %q", localPath, key)
+	key := filepath.Join(prefix, localBatchRoot, "_files.tar.gz")
+	log.Printf("backing up directory %q -> %q", localBatchRoot, key)
 
 	// Create a buffer to write the files into
 	buf := &bytes.Buffer{}
@@ -47,7 +77,7 @@ func backupDirectory(
 	// Scan all the specified files and back them up to the archive.
 	for _, filename := range files {
 		log.Printf("  archiving file %q", filename)
-		absoluteArchiveRoot := filepath.Join(localRoot, localPath)
+		absoluteArchiveRoot := filepath.Join(localRoot, localBatchRoot)
 		absoluteFilename := filepath.Join(localRoot, filename)
 		if err := addFileToArchive(tw, absoluteArchiveRoot, absoluteFilename); err != nil {
 			return fmt.Errorf("failed to add file %q to archive: %+v", filename, err)
@@ -73,7 +103,7 @@ func backupDirectory(
 		Body: bytes.NewReader(buf.Bytes()),
 	})
 	if err != nil {
-		return fmt.Errorf("failed to upload local directory %q to %q: %v", localPath, key, err)
+		return fmt.Errorf("failed to upload local directory %q to %q: %v", localBatchRoot, key, err)
 	}
 	return nil
 }

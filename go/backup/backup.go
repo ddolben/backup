@@ -189,7 +189,9 @@ func deleteBatch(
 	dryRun bool,
 ) error {
 	keyPath := filepath.Join(prefix, batch.Path)
-	if !batch.IsSingleFile {
+	if batch.IsSingleFile {
+		keyPath = keyPath + ".tar.gz"
+	} else {
 		// If it's a directory, delete the archive
 		keyPath = filepath.Join(keyPath, "_files.tar.gz")
 	}

@@ -10,9 +10,7 @@ import (
 )
 
 // Mostly from https://medium.com/@skdomino/taring-untaring-files-in-go-6b07cf56bc07
-func unTar(path string) error {
-	destinationDir := filepath.Dir(path)
-
+func unTar(path string, destinationDir string) error {
 	archiveFile, err := os.Open(path)
 	if err != nil {
 		return err

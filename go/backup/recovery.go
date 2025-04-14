@@ -47,17 +47,25 @@ func RecoverFiles(cfg *aws.Config, bucket string, prefix string, localRoot strin
 		if err := s3_helpers.DownloadFile(client, bucket, *object.Key, localPath); err != nil {
 			log.Fatalf("%s", err)
 		}
+		log.Printf("downloaded %q to local file %q", *object.Key, localPath)
 		if filepath.Base(localPath) == "_files.tar.gz" {
 			log.Printf("extracting files from archive %q", localPath)
-			err := unTar(localPath)
+			err := unTar(localPath, filepath.Dir(localPath))
 			if err != nil {
 				log.Fatalf("failed to extract files from archive %q: %v", localPath, err)
 			}
 			// Delete the archive
 			log.Printf("deleting archive %q", localPath)
 			os.Remove(localPath)
+		} else {
+			log.Printf("extracting single file %q", localPath)
+			err := unTar(localPath, filepath.Dir(localPath))
+			if err != nil {
+				log.Fatalf("failed to extract single file from archive %q: %v", localPath, err)
+			}
+			log.Printf("deleted archive %q", localPath)
+			os.Remove(localPath)
 		}
-		log.Printf("downloaded %q to local file %q", *object.Key, localPath)
 	}
 
 	log.Println("< Recovering files")
