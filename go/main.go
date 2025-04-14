@@ -10,7 +10,7 @@ import (
 func main() {
 	fMetaDb := flag.String("db", "backup.db", "database location for local cache storage")
 	fRootDir := flag.String("dir", ".", "root directory for backup operation")
-	fSizeThreshold := flag.Int64("size_threshold", 1000000, "defines the threshold above which a file gets backed up by itself, as well as the max size of a directory to get zipped together")
+	fSizeThreshold := flag.Int64("size_threshold", 1024*1024, "defines the threshold above which a file gets backed up by itself, as well as the max size of a directory to get zipped together")
 	fBucket := flag.String("bucket", "my-bucket", "S3 bucket")
 	fPrefix := flag.String("prefix", "my-backups", "Prefix for the files stored in the S3 bucket")
 	fDoRecover := flag.Bool("recover", false, "If true, recovers FROM the remote location TO the local location")

@@ -46,8 +46,9 @@ func BackupFiles(
 	// Clean up the root path, since it was user input (e.g. resolve '..' elements).
 	cleanRoot := filepath.Clean(localRoot)
 
+	// Scan through all the files in the directory and arrange them into batches.
 	logger.Infof("> Scanning files")
-	batches, err := getFilesToBackup(db, cleanRoot, cleanRoot, sizeThreshold)
+	batches, err := getFilesToBackup(logger, db, cleanRoot, cleanRoot, sizeThreshold)
 	if err != nil {
 		log.Fatalf("error finding files to backup: %v", err)
 	}
@@ -57,6 +58,7 @@ func BackupFiles(
 	}
 	logger.Infof("< Scanning files")
 
+	// Log the batches for debugging
 	logger.Verbosef("> Found files")
 	for _, batch := range batches {
 		logger.Verbosef("batch %s (%d bytes)", batch.Root, batch.Size())
@@ -74,26 +76,23 @@ func BackupFiles(
 	}
 	logger.Verbosef("< Found files")
 
-	if dryRun {
-		logger.Infof("dry run - not copying files to backup destination")
-		return nil
-	}
-
 	logger.Infof("> Backing up files")
 
 	// TODO: check for duplicate batches by path
 
+	// Backup all batches that have dirty files
 	for _, batch := range batches {
-		err = backupBatch(logger, db, client, cleanRoot, bucket, prefix, batch)
+		err = backupBatch(logger, db, client, cleanRoot, bucket, prefix, batch, dryRun)
 		if err != nil {
 			log.Fatalf("error backing up batch: %+v", err)
 		}
 	}
 	logger.Infof("< Backing up files")
 
+	// Delete any batches in the existing backup that no longer exist
 	logger.Infof("> Clearing unnecessary batches")
 	for _, batch := range batchesToDelete {
-		err = deleteBatch(logger, db, client, cleanRoot, bucket, prefix, batch)
+		err = deleteBatch(logger, db, client, cleanRoot, bucket, prefix, batch, dryRun)
 		if err != nil {
 			log.Fatalf("error deleting batch: %+v", err)
 		}
@@ -111,6 +110,7 @@ func backupBatch(
 	bucket string,
 	prefix string,
 	batch *BackupBatch,
+	dryRun bool,
 ) error {
 	if len(batch.Files) == 0 {
 		return nil
@@ -136,6 +136,14 @@ func backupBatch(
 	}
 	if !anyDirty {
 		logger.Verbosef("no dirty files in batch, skipping: %q", batch.Root)
+		return nil
+	}
+
+	if dryRun {
+		files := util.Map(batch.Files, func(f *BackupFile) string {
+			return f.Path
+		})
+		logger.Infof("dry run, would have backed up batch %q, files: %+v", batch.Root, files)
 		return nil
 	}
 
@@ -178,6 +186,7 @@ func deleteBatch(
 	bucket string,
 	prefix string,
 	batch BatchMeta,
+	dryRun bool,
 ) error {
 	keyPath := filepath.Join(prefix, batch.Path)
 	if !batch.IsSingleFile {
@@ -185,6 +194,11 @@ func deleteBatch(
 		keyPath = filepath.Join(keyPath, "_files.tar.gz")
 	}
 	// Otherwise, the batch name is the filename, so just delete that directly
+
+	if dryRun {
+		logger.Infof("dry run, would have deleted S3 file %q", keyPath)
+		return nil
+	}
 
 	logger.Debugf("deleting S3 file %q", keyPath)
 
@@ -339,7 +353,7 @@ func sumSizes[T WithSize](arr []T) int64 {
 // For each directory, determine the total size of all files in the tree.
 // If the sum is greater than the max, remove the largest subdirectory (mark it as to-be-zipped),
 // then repeat until we are below the max.
-func getFilesToBackup(db *DB, root string, searchPath string, sizeThreshold int64) ([]*BackupBatch, error) {
+func getFilesToBackup(logger logging.Logger, db *DB, root string, searchPath string, sizeThreshold int64) ([]*BackupBatch, error) {
 	// Get files in directory
 	files, err := os.ReadDir(searchPath)
 	if err != nil {
@@ -354,7 +368,7 @@ func getFilesToBackup(db *DB, root string, searchPath string, sizeThreshold int6
 		log.Printf("scanning path %q", path)
 
 		if file.IsDir() {
-			subBatches, err := getFilesToBackup(db, root, path, sizeThreshold)
+			subBatches, err := getFilesToBackup(logger, db, root, path, sizeThreshold)
 			if err != nil {
 				return nil, err
 			}
@@ -391,6 +405,7 @@ func getFilesToBackup(db *DB, root string, searchPath string, sizeThreshold int6
 
 	// Special case: if there's only one batch from the lower subdirectories, bubble it up directly
 	if len(dirFiles) == 0 && len(otherBatches) == 0 && len(maybeRollupBatches) == 1 {
+		logger.Verbosef("special case for batch %q", maybeRollupBatches[0].Root)
 		return maybeRollupBatches, nil
 	}
 
@@ -399,7 +414,6 @@ func getFilesToBackup(db *DB, root string, searchPath string, sizeThreshold int6
 	// Use the path relative to the directory root as the batch name
 	relativeRoot, err := filepath.Rel(root, searchPath)
 	if err != nil {
-		log.Printf("failure 1: %q %q", root, searchPath)
 		return nil, fmt.Errorf("failed to get relative path: %v", err)
 	}
 
@@ -408,8 +422,13 @@ func getFilesToBackup(db *DB, root string, searchPath string, sizeThreshold int6
 		sum := sumSizes(dirFiles)
 		if sum <= sizeThreshold {
 			// Just send them all as a zip file
+			// If it's just one file, use the file path as the Root.
+			batchRoot := relativeRoot
+			if len(dirFiles) == 1 {
+				batchRoot = dirFiles[0].Path
+			}
 			outputBatches = append(outputBatches, &BackupBatch{
-				Root:      relativeRoot,
+				Root:      batchRoot,
 				TotalSize: sum,
 				Files:     dirFiles,
 			})
@@ -431,17 +450,19 @@ func getFilesToBackup(db *DB, root string, searchPath string, sizeThreshold int6
 				sum -= dirFiles[0].Size()
 				dirFiles = dirFiles[1:]
 			}
-			// Add the remaining files as a batch
-			// If it's just one file, use the file path as the Root.
-			batchRoot := relativeRoot
-			if len(dirFiles) == 1 {
-				batchRoot = dirFiles[0].Path
+			if len(dirFiles) > 0 {
+				// Add the remaining files as a batch, if there are any.
+				// If it's just one file, use the file path as the Root.
+				batchRoot := relativeRoot
+				if len(dirFiles) == 1 {
+					batchRoot = dirFiles[0].Path
+				}
+				outputBatches = append(outputBatches, &BackupBatch{
+					Root:      batchRoot,
+					Files:     dirFiles,
+					TotalSize: sum,
+				})
 			}
-			outputBatches = append(outputBatches, &BackupBatch{
-				Root:      batchRoot,
-				Files:     dirFiles,
-				TotalSize: sum,
-			})
 		}
 	}
 
@@ -457,7 +478,7 @@ func getFilesToBackup(db *DB, root string, searchPath string, sizeThreshold int6
 		len(otherBatches) == 0 {
 		totalSize := sumSizes(maybeRollupBatches)
 		if len(outputBatches) > 0 {
-			outputBatches[0].Size()
+			totalSize += outputBatches[0].Size()
 		}
 		if totalSize <= sizeThreshold {
 			// If the total is still below the threshold, jam everything into one big batch.
