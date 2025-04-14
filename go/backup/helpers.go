@@ -16,14 +16,12 @@ import (
 )
 
 func backupFile(client *s3.Client, bucket string, prefix string, localRoot string, localPath string) error {
-	key, err := filepath.Rel(localRoot, localPath)
-	if err != nil {
-		return err
-	}
+	key := localPath
 	key = filepath.Join(prefix, key)
+	absolutePath := filepath.Join(localRoot, localPath)
 
 	log.Printf("backing up file %q to %q", localPath, key)
-	return s3_helpers.UploadFile(client, bucket, key, localPath)
+	return s3_helpers.UploadFile(client, bucket, key, absolutePath)
 }
 
 // Mostly from https://www.arthurkoziel.com/writing-tar-gz-files-in-go/

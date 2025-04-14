@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
 	"local/backup/logging"
+	"local/backup/util"
 )
 
 // TODO: return errors rather than Fatal-ing
@@ -151,7 +152,7 @@ func backupBatch(
 		}
 		for _, f := range files {
 			// TODO: only mark files if they were dirty?
-			markFile(db, f, batch.Root)
+			markFile(db, root, f, batch.Root)
 		}
 	} else {
 		logger.Verbosef("Backing up file: %s", batch.Root)
@@ -161,12 +162,11 @@ func backupBatch(
 			return fmt.Errorf("failed to backup file %q: %+v", filePath, err)
 		}
 		// Root == file path signifies that this file was not in a batch and was backed up individually
-		err = markFile(db, filePath, batch.Root)
+		err = markFile(db, root, filePath, batch.Root)
 		if err != nil {
 			log.Fatalf("error marking file as processed: %v", err)
 		}
 	}
-	)))))))) // File paths in the DB must be relative - should have changed all of the write codepath to handle this but tests are still failing
 	return nil
 }
 
@@ -205,14 +205,15 @@ func deleteBatch(
 	return nil
 }
 
-func markFile(db *DB, path string, batch string) error {
-	info, err := os.Stat(path)
+func markFile(db *DB, localRoot string, path string, batch string) error {
+	absolutePath := filepath.Join(localRoot, path)
+	info, err := os.Stat(absolutePath)
 	if err != nil {
-		log.Fatalf("error stat-ing file: %v", err)
+		return util.ErrorOrPanic("error stat-ing file: %v", err)
 	}
-	hash, err := getFileHash(path)
+	hash, err := getFileHash(absolutePath)
 	if err != nil {
-		log.Fatalf("error hashing file: %v", err)
+		return util.ErrorOrPanic("error hashing file: %v", err)
 	}
 
 	return db.MarkFile(path, info.ModTime(), hash, batch)
@@ -394,6 +395,7 @@ func getFilesToBackup(db *DB, root string, searchPath string, sizeThreshold int6
 	// Use the path relative to the directory root as the batch name
 	relativeRoot, err := filepath.Rel(root, searchPath)
 	if err != nil {
+		log.Printf("failure 1: %q %q", root, searchPath)
 		return nil, fmt.Errorf("failed to get relative path: %v", err)
 	}
 
@@ -416,10 +418,7 @@ func getFilesToBackup(db *DB, root string, searchPath string, sizeThreshold int6
 			// Pop individual files off the stack until we find one that's below
 			// the limit, then send all the rest in a zip file.
 			for sum > sizeThreshold && len(dirFiles) > 0 {
-				relativePath, err := filepath.Rel(root, dirFiles[0].Path)
-				if err != nil {
-					return nil, fmt.Errorf("failed to get relative path: %v", err)
-				}
+				relativePath := dirFiles[0].Path
 				outputBatches = append(outputBatches, &BackupBatch{
 					Root:      relativePath,
 					Files:     []*BackupFile{dirFiles[0]},

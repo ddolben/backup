@@ -25,7 +25,7 @@ import (
 // TODO: test file deletion when it _doesn't_ change the batching strategy
 // TODO: test that changing the size threshold doesn't mess anything up
 
-const minioUrl = "http://minio:9000"
+const minioUrl = "http://localhost:9000"
 
 func init() {
 	rand.Seed(time.Now().UnixNano())
