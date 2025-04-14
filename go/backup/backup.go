@@ -162,7 +162,7 @@ func backupBatch(
 			return fmt.Errorf("failed to backup file %q: %+v", filePath, err)
 		}
 		// Root == file path signifies that this file was not in a batch and was backed up individually
-		err = markFile(db, root, filePath, batch.Root)
+		err = markFile(db, root, filePath, filePath)
 		if err != nil {
 			log.Fatalf("error marking file as processed: %v", err)
 		}
@@ -187,7 +187,6 @@ func deleteBatch(
 	// Otherwise, the batch name is the filename, so just delete that directly
 
 	logger.Debugf("deleting S3 file %q", keyPath)
-	return nil
 
 	_, err := client.DeleteObjects(context.TODO(), &s3.DeleteObjectsInput{
 		Bucket: aws.String(bucket),
@@ -390,6 +389,11 @@ func getFilesToBackup(db *DB, root string, searchPath string, sizeThreshold int6
 		}
 	}
 
+	// Special case: if there's only one batch from the lower subdirectories, bubble it up directly
+	if len(dirFiles) == 0 && len(otherBatches) == 0 && len(maybeRollupBatches) == 1 {
+		return maybeRollupBatches, nil
+	}
+
 	var outputBatches []*BackupBatch
 
 	// Use the path relative to the directory root as the batch name
@@ -428,8 +432,13 @@ func getFilesToBackup(db *DB, root string, searchPath string, sizeThreshold int6
 				dirFiles = dirFiles[1:]
 			}
 			// Add the remaining files as a batch
+			// If it's just one file, use the file path as the Root.
+			batchRoot := relativeRoot
+			if len(dirFiles) == 1 {
+				batchRoot = dirFiles[0].Path
+			}
 			outputBatches = append(outputBatches, &BackupBatch{
-				Root:      relativeRoot,
+				Root:      batchRoot,
 				Files:     dirFiles,
 				TotalSize: sum,
 			})

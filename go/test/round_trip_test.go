@@ -16,6 +16,7 @@ import (
 
 	"local/backup/backup"
 	"local/backup/logging"
+	"local/backup/util"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -373,6 +374,8 @@ func TestRoundTrip_WithLargeSizeThreshold(t *testing.T) {
 		log.Fatal(err)
 	}
 	if len(output.Contents) > 1 {
-		t.Fatalf("expected just 1 S3 file, got: %+v", output.Contents)
+		t.Fatalf("expected just 1 S3 file, got: %+v", util.Map(output.Contents, func(o types.Object) string {
+			return *o.Key
+		}))
 	}
 }
