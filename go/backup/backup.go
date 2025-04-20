@@ -78,6 +78,16 @@ func BackupFiles(
 
 	logger.Infof("> Backing up files")
 
+	logger.Debugf("Bucket: %s", bucket)
+	// Make sure the bucket exists
+	_, err = client.HeadBucket(context.TODO(), &s3.HeadBucketInput{
+		Bucket: aws.String(bucket),
+	})
+	if err != nil {
+		log.Fatalf("bucket doesn't exist: %v", err)
+	}
+	logger.Debugf("Bucket exists")
+
 	// TODO: check for duplicate batches by path
 
 	// Backup all batches that have dirty files

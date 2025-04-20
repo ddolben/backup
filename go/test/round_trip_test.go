@@ -168,10 +168,11 @@ func compareDirectories(baseDir string, recoveryDir string, t *testing.T) {
 	}
 }
 
-func clearBucket(client *s3.Client, bucket string) error {
+func clearBucket(client *s3.Client, bucket string, prefix string) error {
 	// Get the first page of results for ListObjectsV2 for a bucket
 	output, err := client.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
 		Bucket: aws.String(bucket),
+		Prefix: aws.String(prefix),
 	})
 	if err != nil {
 		return err
@@ -197,23 +198,33 @@ func clearBucket(client *s3.Client, bucket string) error {
 	return nil
 }
 
+const (
+	bucket     = "test-bucket"
+	prefixBase = "automated-test"
+)
+
 type roundTripTestConfig struct {
 	SizeThreshold int64
 	// If true, doesn't clear out the S3 bucket's contents. Useful for running multiple tests in a row
 	// to validate dirty checks.
 	LeaveBucketContents bool
+	S3Prefix            string
+	Cleanup             func()
 }
 
 func getDefaultTestConfig() *roundTripTestConfig {
+	myPrefix := prefixBase + "-" + randSeq(16)
+
 	return &roundTripTestConfig{
 		SizeThreshold: 10,
+		S3Prefix:      myPrefix,
+		Cleanup: func() {
+			cfg := backup.GetMinioConfig(minioUrl)
+			client := s3.NewFromConfig(*cfg)
+			must(clearBucket(client, bucket, myPrefix))
+		},
 	}
 }
-
-const (
-	bucket = "test-bucket"
-	prefix = "automated-test"
-)
 
 func roundTripTest(testBaseDir string, testConfig *roundTripTestConfig, t *testing.T) {
 	testRecoveryDir, err := os.MkdirTemp("/tmp", "dave-recovery-test-")
@@ -228,7 +239,7 @@ func roundTripTest(testBaseDir string, testConfig *roundTripTestConfig, t *testi
 
 	if !testConfig.LeaveBucketContents {
 		client := s3.NewFromConfig(*cfg)
-		must(clearBucket(client, bucket))
+		must(clearBucket(client, bucket, testConfig.S3Prefix))
 	}
 
 	logger := &logging.DefaultLogger{
@@ -236,8 +247,8 @@ func roundTripTest(testBaseDir string, testConfig *roundTripTestConfig, t *testi
 	}
 
 	// a and b but not c will be tarred/gzipped
-	must(backup.BackupFiles(logger, cfg, dbFile, testBaseDir, bucket, prefix, testConfig.SizeThreshold, false))
-	must(backup.RecoverFiles(cfg, bucket, prefix, testRecoveryDir))
+	must(backup.BackupFiles(logger, cfg, dbFile, testBaseDir, bucket, testConfig.S3Prefix, testConfig.SizeThreshold, false))
+	must(backup.RecoverFiles(cfg, bucket, testConfig.S3Prefix, testRecoveryDir))
 
 	compareDirectories(testBaseDir, testRecoveryDir, t)
 }
@@ -255,7 +266,9 @@ func TestBasicRoundTrip(t *testing.T) {
 	must(createTestFile(filepath.Join(testBaseDir, "b.txt"), 9))
 	must(createTestFile(filepath.Join(testBaseDir, "c.txt"), 25))
 
-	roundTripTest(testBaseDir, getDefaultTestConfig(), t)
+	config := getDefaultTestConfig()
+	defer config.Cleanup()
+	roundTripTest(testBaseDir, config, t)
 }
 
 func TestRoundTripWithSubdirectories(t *testing.T) {
@@ -279,7 +292,9 @@ func TestRoundTripWithSubdirectories(t *testing.T) {
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/b.txt"), 9))
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/c.txt"), 25))
 
-	roundTripTest(testBaseDir, getDefaultTestConfig(), t)
+	config := getDefaultTestConfig()
+	defer config.Cleanup()
+	roundTripTest(testBaseDir, config, t)
 }
 
 func TestRoundTripWithDeepSubdirectories(t *testing.T) {
@@ -304,6 +319,7 @@ func TestRoundTripWithDeepSubdirectories(t *testing.T) {
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/with/many/directories/c.txt"), 25))
 
 	config := getDefaultTestConfig()
+	defer config.Cleanup()
 	roundTripTest(testBaseDir, config, t)
 }
 
@@ -328,7 +344,9 @@ func TestRoundTripWithDeepSubdirectoriesBeyondThreshold(t *testing.T) {
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/with/many/directories/b.txt"), 9))
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/with/many/directories/c.txt"), 25))
 
-	roundTripTest(testBaseDir, getDefaultTestConfig(), t)
+	config := getDefaultTestConfig()
+	defer config.Cleanup()
+	roundTripTest(testBaseDir, config, t)
 }
 
 func TestRoundTrip_WithLargeSizeThreshold(t *testing.T) {
@@ -350,6 +368,7 @@ func TestRoundTrip_WithLargeSizeThreshold(t *testing.T) {
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/seven/eight/nine/c.txt"), 25))
 
 	config := getDefaultTestConfig()
+	defer config.Cleanup()
 	config.SizeThreshold = 1000
 	roundTripTest(testBaseDir, config, t)
 
@@ -368,7 +387,7 @@ func TestRoundTrip_WithLargeSizeThreshold(t *testing.T) {
 	client := s3.NewFromConfig(*cfg)
 	output, err := client.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
 		Bucket: aws.String(bucket),
-		Prefix: aws.String(prefix),
+		Prefix: aws.String(prefixBase),
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -377,5 +396,74 @@ func TestRoundTrip_WithLargeSizeThreshold(t *testing.T) {
 		t.Fatalf("expected just 1 S3 file, got: %+v", util.Map(output.Contents, func(o types.Object) string {
 			return *o.Key
 		}))
+	}
+}
+
+func TestRoundTrip_MultiRun(t *testing.T) {
+	// Create test directory and write a bunch of files
+	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
+	must(err)
+
+	defer (func() {
+		must(os.RemoveAll(testBaseDir))
+	})()
+
+	type runFileSpec struct {
+		Path string
+		Size int
+	}
+	type runSpec struct {
+		Files []runFileSpec
+	}
+	runSpecs := []runSpec{
+		{
+			Files: []runFileSpec{
+				{Path: "a.txt", Size: 5},
+				{Path: "b.txt", Size: 9},
+				{Path: "c.txt", Size: 25},
+			},
+		},
+	}
+	runSpecs = append(runSpecs, runSpec{
+		Files: append(
+			[]runFileSpec{
+				{Path: "subdir-1/one/two/three/a.txt", Size: 5},
+				{Path: "subdir-1/four/five/six/b.txt", Size: 9},
+				{Path: "subdir-1/seven/eight/nine/c.txt", Size: 25},
+				{Path: "subdir-2/with/many/directories/a.txt", Size: 5},
+				{Path: "subdir-2/with/many/directories/b.txt", Size: 9},
+				{Path: "subdir-2/with/many/directories/c.txt", Size: 25},
+			},
+			runSpecs[0].Files...,
+		),
+	})
+	runSpecs = append(runSpecs, runSpec{
+		Files: append(
+			[]runFileSpec{},
+			// Remove all files that contain "b.txt" in the name, and rezise the a.txt files to be bigger.
+			util.Map(
+				util.Filter(runSpecs[0].Files, func(f runFileSpec) bool {
+					return !strings.Contains(f.Path, "b.txt")
+				}),
+				func(f runFileSpec) runFileSpec {
+					if strings.Contains(f.Path, "a.txt") {
+						f.Size += 100
+					}
+					return f
+				},
+			)...,
+		),
+	})
+
+	config := getDefaultTestConfig()
+	defer config.Cleanup()
+
+	for i, runSpec := range runSpecs {
+		for _, fileSpec := range runSpec.Files {
+			must(createTestFile(filepath.Join(testBaseDir, fileSpec.Path), fileSpec.Size))
+		}
+		fmt.Printf("+++ running round trip test for run %d\n", i)
+		roundTripTest(testBaseDir, config, t)
+		fmt.Printf("--- finished round trip test for run %d\n", i)
 	}
 }
