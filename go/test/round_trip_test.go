@@ -29,6 +29,243 @@ const minioUrl = "http://localhost:9000"
 
 var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
+func TestRoundTrip_Basic(t *testing.T) {
+	// Create test directory and write a bunch of files
+	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
+	must(err)
+
+	defer (func() {
+		must(os.RemoveAll(testBaseDir))
+	})()
+
+	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "c.txt"), 25))
+
+	config := getDefaultTestConfig()
+	defer config.Cleanup()
+	roundTripTest(testBaseDir, config, t)
+}
+
+func TestRoundTrip_WithSubdirectories_AllSingleFileBatches(t *testing.T) {
+	// Create test directory and write a bunch of files
+	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
+	must(err)
+
+	defer (func() {
+		must(os.RemoveAll(testBaseDir))
+	})()
+
+	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "c.txt"), 25))
+
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/c.txt"), 25))
+
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/c.txt"), 25))
+
+	config := getDefaultTestConfig()
+	defer config.Cleanup()
+	roundTripTest(testBaseDir, config, t)
+}
+
+func TestRoundTrip_WithDeepSubdirectories_AllSingleFileBatches(t *testing.T) {
+	// Create test directory and write a bunch of files
+	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
+	must(err)
+
+	defer (func() {
+		must(os.RemoveAll(testBaseDir))
+	})()
+
+	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "c.txt"), 25))
+
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/one/two/three/a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/four/five/six/b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/seven/eight/nine/c.txt"), 25))
+
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/with/many/directories/a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/with/many/directories/b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/with/many/directories/c.txt"), 25))
+
+	config := getDefaultTestConfig()
+	defer config.Cleanup()
+	roundTripTest(testBaseDir, config, t)
+}
+
+func TestRoundTrip_SomeMultiFileBatches(t *testing.T) {
+	// Create test directory and write a bunch of files
+	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
+	must(err)
+
+	defer (func() {
+		must(os.RemoveAll(testBaseDir))
+	})()
+
+	// These should get grouped
+	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "c.txt"), 25))
+
+	// These should _not_ get grouped because one of the files is too big
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/one/two/three/a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/four/five/six/b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/four/five/six/big.txt"), 2000))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/seven/eight/nine/c.txt"), 25))
+
+	// These should get grouped together separately from the top-level files
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/one/two/three/a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/four/five/six/b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/seven/eight/nine/c.txt"), 25))
+
+	config := getDefaultTestConfig()
+	defer config.Cleanup()
+	config.SizeThreshold = 1000
+	roundTripTest(testBaseDir, config, t)
+}
+
+func TestRoundTrip_BatchingChangesAcrossRuns(t *testing.T) {
+	// Create test directory and write a bunch of files
+	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
+	must(err)
+
+	defer (func() {
+		must(os.RemoveAll(testBaseDir))
+	})()
+
+	// These should get grouped
+	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "c.txt"), 25))
+
+	// These should _not_ get grouped because one of the files is too big
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/one/two/three/a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/four/five/six/b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/four/five/six/big.txt"), 2000))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/seven/eight/nine/c.txt"), 25))
+
+	// These should get grouped together separately from the top-level files
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/one/two/three/a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/four/five/six/b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/seven/eight/nine/c.txt"), 25))
+
+	config := getDefaultTestConfig()
+	defer config.Cleanup()
+	config.SizeThreshold = 1000
+	roundTripTest(testBaseDir, config, t)
+
+	// Remove the large file down the three, causing the entire directory hierarchy to collapse into
+	// one batch. Also tests that file deletion is working properly.
+	must(os.Remove(filepath.Join(testBaseDir, "subdir-1/four/five/six/big.txt")))
+
+	// Run the test again, _without_ clearing the bucket (so we effectively get the same behavior as a
+	// non-fresh run in real life).
+	config.LeaveBucketContents = true
+	roundTripTest(testBaseDir, config, t)
+
+	// Check manually that there is only one batch in the db
+	dbFile := filepath.Join(testBaseDir, "backup.db")
+	db, err := backup.NewDB(dbFile)
+	must(err)
+	batchesInDb, err := db.GetExistingBatches(true)
+	must(err)
+	if len(batchesInDb) != 1 {
+		t.Fatalf("expected 1 batch in the db, got: %+v", batchesInDb)
+	}
+
+	// Check manually for extraneous S3 files. There should now only be one in this prefix, since the
+	// smaller batches from the first run should have been cleaned up.
+	cfg := backup.GetMinioConfig(minioUrl)
+	client := s3.NewFromConfig(*cfg)
+	output, err := client.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
+		Bucket: aws.String(bucket),
+		Prefix: aws.String(config.S3Prefix),
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if len(output.Contents) > 1 {
+		t.Fatalf("expected just 1 S3 file, got: %+v", util.Map(output.Contents, func(o types.Object) string {
+			return *o.Key
+		}))
+	}
+}
+
+func TestRoundTrip_MultiRun(t *testing.T) {
+	// Create test directory and write a bunch of files
+	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
+	must(err)
+
+	defer (func() {
+		must(os.RemoveAll(testBaseDir))
+	})()
+
+	type runFileSpec struct {
+		Path string
+		Size int
+	}
+	type runSpec struct {
+		Files []runFileSpec
+	}
+	runSpecs := []runSpec{
+		{
+			Files: []runFileSpec{
+				{Path: "a.txt", Size: 5},
+				{Path: "b.txt", Size: 9},
+				{Path: "c.txt", Size: 25},
+			},
+		},
+	}
+	runSpecs = append(runSpecs, runSpec{
+		Files: append(
+			[]runFileSpec{
+				{Path: "subdir-1/one/two/three/a.txt", Size: 5},
+				{Path: "subdir-1/four/five/six/b.txt", Size: 9},
+				{Path: "subdir-1/seven/eight/nine/c.txt", Size: 25},
+				{Path: "subdir-2/with/many/directories/a.txt", Size: 5},
+				{Path: "subdir-2/with/many/directories/b.txt", Size: 9},
+				{Path: "subdir-2/with/many/directories/c.txt", Size: 25},
+			},
+			runSpecs[0].Files...,
+		),
+	})
+	runSpecs = append(runSpecs, runSpec{
+		Files: append(
+			[]runFileSpec{},
+			// Remove all files that contain "b.txt" in the name, and rezise the a.txt files to be bigger.
+			util.Map(
+				util.Filter(runSpecs[0].Files, func(f runFileSpec) bool {
+					return !strings.Contains(f.Path, "b.txt")
+				}),
+				func(f runFileSpec) runFileSpec {
+					if strings.Contains(f.Path, "a.txt") {
+						f.Size += 100
+					}
+					return f
+				},
+			)...,
+		),
+	})
+
+	config := getDefaultTestConfig()
+	defer config.Cleanup()
+
+	for i, runSpec := range runSpecs {
+		for _, fileSpec := range runSpec.Files {
+			must(createTestFile(filepath.Join(testBaseDir, fileSpec.Path), fileSpec.Size))
+		}
+		fmt.Printf("+++ running round trip test for run %d\n", i)
+		roundTripTest(testBaseDir, config, t)
+		fmt.Printf("--- finished round trip test for run %d\n", i)
+	}
+}
+
 func randSeq(n int) string {
 	b := make([]rune, n)
 	for i := range b {
@@ -318,220 +555,5 @@ func roundTripTest(testBaseDir string, testConfig *roundTripTestConfig, t *testi
 	}
 	if len(unexpectedBatches) > 0 {
 		t.Fatalf("found unexpected batches in S3: %+v", unexpectedBatches)
-	}
-}
-
-func TestBasicRoundTrip(t *testing.T) {
-	// Create test directory and write a bunch of files
-	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
-	must(err)
-
-	defer (func() {
-		must(os.RemoveAll(testBaseDir))
-	})()
-
-	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
-	must(createTestFile(filepath.Join(testBaseDir, "b.txt"), 9))
-	must(createTestFile(filepath.Join(testBaseDir, "c.txt"), 25))
-
-	config := getDefaultTestConfig()
-	defer config.Cleanup()
-	roundTripTest(testBaseDir, config, t)
-}
-
-func TestRoundTripWithSubdirectories(t *testing.T) {
-	// Create test directory and write a bunch of files
-	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
-	must(err)
-
-	defer (func() {
-		must(os.RemoveAll(testBaseDir))
-	})()
-
-	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
-	must(createTestFile(filepath.Join(testBaseDir, "b.txt"), 9))
-	must(createTestFile(filepath.Join(testBaseDir, "c.txt"), 25))
-
-	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/a.txt"), 5))
-	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/b.txt"), 9))
-	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/c.txt"), 25))
-
-	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/a.txt"), 5))
-	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/b.txt"), 9))
-	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/c.txt"), 25))
-
-	config := getDefaultTestConfig()
-	defer config.Cleanup()
-	roundTripTest(testBaseDir, config, t)
-}
-
-func TestRoundTripWithDeepSubdirectories(t *testing.T) {
-	// Create test directory and write a bunch of files
-	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
-	must(err)
-
-	defer (func() {
-		must(os.RemoveAll(testBaseDir))
-	})()
-
-	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
-	must(createTestFile(filepath.Join(testBaseDir, "b.txt"), 9))
-	must(createTestFile(filepath.Join(testBaseDir, "c.txt"), 25))
-
-	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/one/two/three/a.txt"), 5))
-	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/four/five/six/b.txt"), 9))
-	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/seven/eight/nine/c.txt"), 25))
-
-	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/with/many/directories/a.txt"), 5))
-	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/with/many/directories/b.txt"), 9))
-	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/with/many/directories/c.txt"), 25))
-
-	config := getDefaultTestConfig()
-	defer config.Cleanup()
-	roundTripTest(testBaseDir, config, t)
-}
-
-func TestRoundTripWithDeepSubdirectoriesBeyondThreshold(t *testing.T) {
-	// Create test directory and write a bunch of files
-	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
-	must(err)
-
-	defer (func() {
-		must(os.RemoveAll(testBaseDir))
-	})()
-
-	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
-	must(createTestFile(filepath.Join(testBaseDir, "b.txt"), 9))
-	must(createTestFile(filepath.Join(testBaseDir, "c.txt"), 25))
-
-	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/one/two/three/a.txt"), 5))
-	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/four/five/six/b.txt"), 9))
-	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/seven/eight/nine/c.txt"), 25))
-
-	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/with/many/directories/a.txt"), 5))
-	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/with/many/directories/b.txt"), 9))
-	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/with/many/directories/c.txt"), 25))
-
-	config := getDefaultTestConfig()
-	defer config.Cleanup()
-	roundTripTest(testBaseDir, config, t)
-}
-
-func TestRoundTrip_WithLargeSizeThreshold(t *testing.T) {
-	// Create test directory and write a bunch of files
-	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
-	must(err)
-
-	defer (func() {
-		must(os.RemoveAll(testBaseDir))
-	})()
-
-	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
-	must(createTestFile(filepath.Join(testBaseDir, "b.txt"), 9))
-	must(createTestFile(filepath.Join(testBaseDir, "c.txt"), 25))
-
-	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/one/two/three/a.txt"), 5))
-	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/four/five/six/b.txt"), 9))
-	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/four/five/six/big.txt"), 2000))
-	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/seven/eight/nine/c.txt"), 25))
-
-	config := getDefaultTestConfig()
-	defer config.Cleanup()
-	config.SizeThreshold = 1000
-	roundTripTest(testBaseDir, config, t)
-
-	// Remove the large file down the three, causing the entire directory hierarchy to collapse into
-	// one batch. Also tests that file deletion is working properly.
-	must(os.Remove(filepath.Join(testBaseDir, "subdir-1/four/five/six/big.txt")))
-
-	// Run the test again, _without_ clearing the bucket (so we effectively get the same behavior as a
-	// non-fresh run in real life).
-	config.LeaveBucketContents = true
-	roundTripTest(testBaseDir, config, t)
-
-	// Check manually for extraneous S3 files. There should now only be one in this prefix, since the
-	// smaller batches from the first run should have been cleaned up.
-	cfg := backup.GetMinioConfig(minioUrl)
-	client := s3.NewFromConfig(*cfg)
-	output, err := client.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
-		Bucket: aws.String(bucket),
-		Prefix: aws.String(config.S3Prefix),
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-	if len(output.Contents) > 1 {
-		t.Fatalf("expected just 1 S3 file, got: %+v", util.Map(output.Contents, func(o types.Object) string {
-			return *o.Key
-		}))
-	}
-}
-
-func TestRoundTrip_MultiRun(t *testing.T) {
-	// Create test directory and write a bunch of files
-	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
-	must(err)
-
-	defer (func() {
-		must(os.RemoveAll(testBaseDir))
-	})()
-
-	type runFileSpec struct {
-		Path string
-		Size int
-	}
-	type runSpec struct {
-		Files []runFileSpec
-	}
-	runSpecs := []runSpec{
-		{
-			Files: []runFileSpec{
-				{Path: "a.txt", Size: 5},
-				{Path: "b.txt", Size: 9},
-				{Path: "c.txt", Size: 25},
-			},
-		},
-	}
-	runSpecs = append(runSpecs, runSpec{
-		Files: append(
-			[]runFileSpec{
-				{Path: "subdir-1/one/two/three/a.txt", Size: 5},
-				{Path: "subdir-1/four/five/six/b.txt", Size: 9},
-				{Path: "subdir-1/seven/eight/nine/c.txt", Size: 25},
-				{Path: "subdir-2/with/many/directories/a.txt", Size: 5},
-				{Path: "subdir-2/with/many/directories/b.txt", Size: 9},
-				{Path: "subdir-2/with/many/directories/c.txt", Size: 25},
-			},
-			runSpecs[0].Files...,
-		),
-	})
-	runSpecs = append(runSpecs, runSpec{
-		Files: append(
-			[]runFileSpec{},
-			// Remove all files that contain "b.txt" in the name, and rezise the a.txt files to be bigger.
-			util.Map(
-				util.Filter(runSpecs[0].Files, func(f runFileSpec) bool {
-					return !strings.Contains(f.Path, "b.txt")
-				}),
-				func(f runFileSpec) runFileSpec {
-					if strings.Contains(f.Path, "a.txt") {
-						f.Size += 100
-					}
-					return f
-				},
-			)...,
-		),
-	})
-
-	config := getDefaultTestConfig()
-	defer config.Cleanup()
-
-	for i, runSpec := range runSpecs {
-		for _, fileSpec := range runSpec.Files {
-			must(createTestFile(filepath.Join(testBaseDir, fileSpec.Path), fileSpec.Size))
-		}
-		fmt.Printf("+++ running round trip test for run %d\n", i)
-		roundTripTest(testBaseDir, config, t)
-		fmt.Printf("--- finished round trip test for run %d\n", i)
 	}
 }
