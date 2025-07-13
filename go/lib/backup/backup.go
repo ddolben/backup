@@ -47,7 +47,7 @@ func BackupFiles(
 	cleanRoot := filepath.Clean(localRoot)
 
 	// Scan through all the files in the directory and arrange them into batches.
-	logger.Infof("> Scanning files")
+	logger.Verbosef("> Scanning files")
 	batches, err := getFilesToBackup(logger, db, cleanRoot, cleanRoot, sizeThreshold)
 	if err != nil {
 		log.Fatalf("error finding files to backup: %v", err)
@@ -56,7 +56,7 @@ func BackupFiles(
 	if err != nil {
 		log.Fatalf("error finding batches to delete: %v", err)
 	}
-	logger.Infof("< Scanning files")
+	logger.Verbosef("< Scanning files")
 
 	// Log the batches for debugging
 	logger.Verbosef("> Found files")
@@ -76,7 +76,7 @@ func BackupFiles(
 	}
 	logger.Verbosef("< Found files")
 
-	logger.Infof("> Backing up files")
+	logger.Verbosef("> Backing up files")
 
 	logger.Debugf("Bucket: %s", bucket)
 	// Make sure the bucket exists
@@ -92,14 +92,14 @@ func BackupFiles(
 
 	// Delete any batches in the existing backup that no longer exist. Do this first as a precaution
 	// so we don't accidentally delete files that should still be in the backup.
-	logger.Infof("> Clearing unnecessary batches")
+	logger.Verbosef("> Clearing unnecessary batches")
 	for _, batch := range batchesToDelete {
 		err = deleteBatch(logger, db, client, cleanRoot, bucket, prefix, batch, dryRun)
 		if err != nil {
 			log.Fatalf("error deleting batch: %+v", err)
 		}
 	}
-	logger.Infof("< Clearing unnecessary batches")
+	logger.Verbosef("< Clearing unnecessary batches")
 
 	// Backup all batches that have dirty files
 	for _, batch := range batches {
@@ -108,7 +108,7 @@ func BackupFiles(
 			log.Fatalf("error backing up batch: %+v", err)
 		}
 	}
-	logger.Infof("< Backing up files")
+	logger.Verbosef("< Backing up files")
 
 	return nil
 }
@@ -165,7 +165,7 @@ func backupBatch(
 		}
 		logger.Verbosef("Backing up file batch: %s, dirty files: %v", batch.Root, files)
 
-		err := backupDirectory(client, bucket, prefix, root, batch.Root, files)
+		err := backupDirectory(logger, client, bucket, prefix, root, batch.Root, files)
 		if err != nil {
 			return fmt.Errorf("failed to backup batch %q: %+v", batch.Root, err)
 		}
@@ -176,7 +176,7 @@ func backupBatch(
 	} else {
 		logger.Verbosef("Backing up file: %s", batch.Root)
 		filePath := batch.Files[0].Path
-		err := backupFile(client, bucket, prefix, root, filePath)
+		err := backupFile(logger, client, bucket, prefix, root, filePath)
 		if err != nil {
 			return fmt.Errorf("failed to backup file %q: %+v", filePath, err)
 		}
@@ -393,7 +393,7 @@ func getFilesToBackup(logger logging.Logger, db *DB, root string, searchPath str
 	var otherBatches []*BackupBatch
 	for _, file := range files {
 		path := filepath.Join(searchPath, file.Name())
-		log.Printf("scanning path %q", path)
+		logger.Verbosef("scanning path %q", path)
 
 		if file.IsDir() {
 			subBatches, err := getFilesToBackup(logger, db, root, path, sizeThreshold)
@@ -427,7 +427,7 @@ func getFilesToBackup(logger logging.Logger, db *DB, root string, searchPath str
 				FileSize: info.Size(),
 				IsDirty:  isDirty,
 			})
-			log.Printf("  found file %q", path)
+			logger.Verbosef("  found file %q", path)
 		}
 	}
 
@@ -541,10 +541,6 @@ func getBatchesToDelete(db *DB, batches []*BackupBatch) ([]BatchMeta, error) {
 	var plannedBatches []string
 	for _, batch := range batches {
 		plannedBatches = append(plannedBatches, batch.Root)
-	}
-
-	if err := db.DumpDB(); err != nil {
-		panic(err)
 	}
 
 	// Find all batches currently in the backup (scan of the db)

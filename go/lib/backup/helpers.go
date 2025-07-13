@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"local/backup/lib/logging"
 	"log"
 	"os"
 	"path/filepath"
@@ -14,12 +15,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-func backupFile(client *s3.Client, bucket string, prefix string, localRoot string, localPath string) error {
+func backupFile(logger logging.Logger, client *s3.Client, bucket string, prefix string, localRoot string, localPath string) error {
 	key := localPath + ".gz"
 	key = filepath.Join(prefix, key)
 	absolutePath := filepath.Join(localRoot, localPath)
 
-	log.Printf("backing up file %q to %q", localPath, key)
+	logger.Verbosef("backing up file %q to %q", localPath, key)
 
 	// Create a buffer to write the file into
 	buf := &bytes.Buffer{}
@@ -57,6 +58,7 @@ func backupFile(client *s3.Client, bucket string, prefix string, localRoot strin
 
 // Mostly from https://www.arthurkoziel.com/writing-tar-gz-files-in-go/
 func backupDirectory(
+	logger logging.Logger,
 	client *s3.Client,
 	bucket string,
 	prefix string,
@@ -66,7 +68,7 @@ func backupDirectory(
 	files []string,
 ) error {
 	key := filepath.Join(prefix, localBatchRoot, "_files.tar.gz")
-	log.Printf("backing up directory %q -> %q", localBatchRoot, key)
+	logger.Verbosef("backing up directory %q -> %q", localBatchRoot, key)
 
 	// Create a buffer to write the files into
 	buf := &bytes.Buffer{}
@@ -77,7 +79,7 @@ func backupDirectory(
 
 	// Scan all the specified files and back them up to the archive.
 	for _, filename := range files {
-		log.Printf("  archiving file %q", filename)
+		logger.Verbosef("  archiving file %q", filename)
 		absoluteArchiveRoot := filepath.Join(localRoot, localBatchRoot)
 		absoluteFilename := filepath.Join(localRoot, filename)
 		if err := addFileToArchive(tw, absoluteArchiveRoot, absoluteFilename); err != nil {

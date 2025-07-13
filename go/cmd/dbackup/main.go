@@ -44,6 +44,8 @@ func main() {
 		logger.Level = logging.Debug
 	case "verbose":
 		logger.Level = logging.Verbose
+	case "info":
+		logger.Level = logging.Info
 	}
 
 	backupName := *fBackupName
