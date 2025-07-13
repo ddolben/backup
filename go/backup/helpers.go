@@ -15,10 +15,9 @@ import (
 )
 
 func backupFile(client *s3.Client, bucket string, prefix string, localRoot string, localPath string) error {
-	key := localPath + ".tar.gz"
+	key := localPath + ".gz"
 	key = filepath.Join(prefix, key)
 	absolutePath := filepath.Join(localRoot, localPath)
-	absoluteArchiveRoot := filepath.Dir(absolutePath)
 
 	log.Printf("backing up file %q to %q", localPath, key)
 
@@ -27,23 +26,25 @@ func backupFile(client *s3.Client, bucket string, prefix string, localRoot strin
 
 	// Streams for tar archive and gzip
 	gw := gzip.NewWriter(buf)
-	tw := tar.NewWriter(gw)
 
-	// Add the single file to the archive
-	if err := addFileToArchive(tw, absoluteArchiveRoot, absolutePath); err != nil {
-		return fmt.Errorf("failed to add file %q to archive: %+v", localPath, err)
+	// Write the file to the gzip writer
+	file, err := os.Open(absolutePath)
+	if err != nil {
+		return fmt.Errorf("failed to open file %q: %+v", localPath, err)
+	}
+	defer file.Close()
+	_, err = io.Copy(gw, file)
+	if err != nil {
+		return fmt.Errorf("failed to copy file %q to gzip writer: %+v", localPath, err)
 	}
 
 	// Close writers to complete the archive
-	if err := tw.Close(); err != nil {
-		return fmt.Errorf("failed to close tar writer: %v", err)
-	}
 	if err := gw.Close(); err != nil {
 		return fmt.Errorf("failed to close gzip writer: %v", err)
 	}
 
 	// Write the results of the buffer to s3
-	_, err := client.PutObject(context.TODO(), &s3.PutObjectInput{
+	_, err = client.PutObject(context.TODO(), &s3.PutObjectInput{
 		Bucket: &bucket,
 		Key:    &key,
 		Body:   bytes.NewReader(buf.Bytes()),

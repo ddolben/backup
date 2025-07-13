@@ -59,11 +59,11 @@ func RecoverFiles(cfg *aws.Config, bucket string, prefix string, localRoot strin
 			os.Remove(localPath)
 		} else {
 			log.Printf("extracting single file %q", localPath)
-			err := unTar(localPath, filepath.Dir(localPath))
+			err := decompressFile(localPath, filepath.Dir(localPath))
 			if err != nil {
-				log.Fatalf("failed to extract single file from archive %q: %v", localPath, err)
+				log.Fatalf("failed to decompress file %q: %v", localPath, err)
 			}
-			log.Printf("deleted archive %q", localPath)
+			log.Printf("deleted compressed file %q", localPath)
 			os.Remove(localPath)
 		}
 	}

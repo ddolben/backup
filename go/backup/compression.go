@@ -7,7 +7,37 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 )
+
+func decompressFile(sourcePath string, destinationDir string) error {
+	archiveFile, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer archiveFile.Close()
+
+	gzr, err := gzip.NewReader(archiveFile)
+	if err != nil {
+		return err
+	}
+	defer gzr.Close()
+
+	destinationFilename := filepath.Join(destinationDir, filepath.Base(sourcePath))
+	destinationFilename = strings.TrimSuffix(destinationFilename, ".gz")
+	destinationFile, err := os.Create(destinationFilename)
+	if err != nil {
+		return err
+	}
+	defer destinationFile.Close()
+
+	_, err = io.Copy(destinationFile, gzr)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
 
 // Mostly from https://medium.com/@skdomino/taring-untaring-files-in-go-6b07cf56bc07
 func unTar(path string, destinationDir string) error {

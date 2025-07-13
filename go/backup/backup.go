@@ -35,7 +35,7 @@ func BackupFiles(
 	logger.Debugf("size threshold: %d", sizeThreshold)
 
 	// Load the db
-	db, err := newDB(dbFile)
+	db, err := NewDB(dbFile)
 	if err != nil {
 		log.Fatalf("error loading db: %v", err)
 	}
@@ -90,16 +90,8 @@ func BackupFiles(
 
 	// TODO: check for duplicate batches by path
 
-	// Backup all batches that have dirty files
-	for _, batch := range batches {
-		err = backupBatch(logger, db, client, cleanRoot, bucket, prefix, batch, dryRun)
-		if err != nil {
-			log.Fatalf("error backing up batch: %+v", err)
-		}
-	}
-	logger.Infof("< Backing up files")
-
-	// Delete any batches in the existing backup that no longer exist
+	// Delete any batches in the existing backup that no longer exist. Do this first as a precaution
+	// so we don't accidentally delete files that should still be in the backup.
 	logger.Infof("> Clearing unnecessary batches")
 	for _, batch := range batchesToDelete {
 		err = deleteBatch(logger, db, client, cleanRoot, bucket, prefix, batch, dryRun)
@@ -108,6 +100,15 @@ func BackupFiles(
 		}
 	}
 	logger.Infof("< Clearing unnecessary batches")
+
+	// Backup all batches that have dirty files
+	for _, batch := range batches {
+		err = backupBatch(logger, db, client, cleanRoot, bucket, prefix, batch, dryRun)
+		if err != nil {
+			log.Fatalf("error backing up batch: %+v", err)
+		}
+	}
+	logger.Infof("< Backing up files")
 
 	return nil
 }
@@ -200,12 +201,11 @@ func deleteBatch(
 ) error {
 	keyPath := filepath.Join(prefix, batch.Path)
 	if batch.IsSingleFile {
-		keyPath = keyPath + ".tar.gz"
+		keyPath = keyPath + ".gz"
 	} else {
 		// If it's a directory, delete the archive
 		keyPath = filepath.Join(keyPath, "_files.tar.gz")
 	}
-	// Otherwise, the batch name is the filename, so just delete that directly
 
 	if dryRun {
 		logger.Infof("dry run, would have deleted S3 file %q", keyPath)
@@ -227,6 +227,22 @@ func deleteBatch(
 	if err != nil {
 		return err
 	}
+
+	logger.Debugf("deleting batch from db: %q", batch.Path)
+	files, err := db.GetFilesInBatch(batch.Path)
+	if err != nil {
+		return fmt.Errorf("error getting files in batch: %v", err)
+	}
+	for _, file := range files {
+		logger.Debugf("  %s", file)
+	}
+
+	// Delete the batch from the db
+	err = db.DeleteBatch(batch.Path)
+	if err != nil {
+		return fmt.Errorf("error deleting batch from db: %v", err)
+	}
+
 	return nil
 }
 
@@ -532,7 +548,7 @@ func getBatchesToDelete(db *DB, batches []*BackupBatch) ([]BatchMeta, error) {
 	}
 
 	// Find all batches currently in the backup (scan of the db)
-	existingBatches, err := db.GetExistingBatches()
+	existingBatches, err := db.GetExistingBatches(false)
 	if err != nil {
 		return nil, fmt.Errorf("error fetching existing batches from db: %v", err)
 	}

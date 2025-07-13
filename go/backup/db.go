@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	_ "github.com/glebarez/go-sqlite"
@@ -19,7 +20,7 @@ type DB struct {
 	db *sql.DB
 }
 
-func newDB(path string) (*DB, error) {
+func NewDB(path string) (*DB, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
@@ -45,6 +46,10 @@ func initDB(db *sql.DB) error {
 		)
 	`)
 	return err
+}
+
+func (db *DB) Close() error {
+	return db.db.Close()
 }
 
 func (db *DB) DumpDB() error {
@@ -111,30 +116,82 @@ func (db *DB) MarkFile(path string, modTime time.Time, hash string, batch string
 	return err
 }
 
+func (db *DB) GetFilesInBatch(batch string) ([]string, error) {
+	rows, err := db.db.Query(`
+		SELECT path FROM files WHERE batch = ?
+	`, batch)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var files []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, err
+		}
+		files = append(files, path)
+	}
+	return files, nil
+}
+
+func (db *DB) DeleteBatch(batch string) error {
+	_, err := db.db.Exec(`
+		DELETE FROM files
+		WHERE batch = ?
+	`, batch)
+	return err
+}
+
 type BatchMeta struct {
 	Path         string
 	IsSingleFile bool
+	Filenames    []string
 }
 
-func (db *DB) GetExistingBatches() ([]BatchMeta, error) {
-	// TODO: what happens if the DB has files in a batch with a name that is also the same as one of the filenames?
-	rows, err := db.db.Query(`
-		SELECT
-			batch,
-			count(*) as num_files,
-			sum(is_dir) as num_grouped_files
-		FROM (
+func (db *DB) GetExistingBatches(includeFilenames bool) ([]BatchMeta, error) {
+	var rows *sql.Rows
+	var err error
+	if includeFilenames {
+		// TODO: what happens if the DB has files in a batch with a name that is also the same as one of the filenames?
+		rows, err = db.db.Query(`
 			SELECT
 				batch,
-				path,
-				CASE
-					WHEN batch != path THEN 1
-					ELSE 0
-				END as is_dir
-			FROM files
-		)
-		GROUP BY batch
-	`)
+				count(*) as num_files,
+				sum(is_dir) as num_grouped_files,
+				group_concat(path) as filenames
+			FROM (
+				SELECT
+					batch,
+					path,
+					CASE
+						WHEN batch != path THEN 1
+						ELSE 0
+					END as is_dir
+				FROM files
+			)
+			GROUP BY batch
+		`)
+	} else {
+		rows, err = db.db.Query(`
+			SELECT
+				batch,
+				count(*) as num_files,
+				sum(is_dir) as num_grouped_files
+			FROM (
+				SELECT
+					batch,
+					path,
+					CASE
+						WHEN batch != path THEN 1
+						ELSE 0
+					END as is_dir
+				FROM files
+			)
+			GROUP BY batch
+		`)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -145,8 +202,17 @@ func (db *DB) GetExistingBatches() ([]BatchMeta, error) {
 		var batch string
 		var numFiles int64
 		var numGroupedFiles int64
-		if err := rows.Scan(&batch, &numFiles, &numGroupedFiles); err != nil {
-			return nil, err
+		var filenames []string
+		if includeFilenames {
+			var filenamesString string
+			if err := rows.Scan(&batch, &numFiles, &numGroupedFiles, &filenamesString); err != nil {
+				return nil, err
+			}
+			filenames = strings.Split(filenamesString, ",")
+		} else {
+			if err := rows.Scan(&batch, &numFiles, &numGroupedFiles); err != nil {
+				return nil, err
+			}
 		}
 		if numGroupedFiles > 0 && numGroupedFiles != numFiles {
 			return nil, fmt.Errorf("detected a batch with multiple files, where one of the filenames matches the batch name: %q", batch)
@@ -154,6 +220,7 @@ func (db *DB) GetExistingBatches() ([]BatchMeta, error) {
 		batches = append(batches, BatchMeta{
 			Path:         batch,
 			IsSingleFile: numGroupedFiles == 0,
+			Filenames:    filenames,
 		})
 	}
 	return batches, nil

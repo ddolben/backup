@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"local/backup/backup"
 	"local/backup/logging"
@@ -27,10 +26,6 @@ import (
 // TODO: test that changing the size threshold doesn't mess anything up
 
 const minioUrl = "http://localhost:9000"
-
-func init() {
-	rand.Seed(time.Now().UnixNano())
-}
 
 var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
@@ -235,10 +230,10 @@ func roundTripTest(testBaseDir string, testConfig *roundTripTestConfig, t *testi
 	})()
 
 	cfg := backup.GetMinioConfig(minioUrl)
+	client := s3.NewFromConfig(*cfg)
 	dbFile := filepath.Join(testBaseDir, "backup.db")
 
 	if !testConfig.LeaveBucketContents {
-		client := s3.NewFromConfig(*cfg)
 		must(clearBucket(client, bucket, testConfig.S3Prefix))
 	}
 
@@ -251,6 +246,79 @@ func roundTripTest(testBaseDir string, testConfig *roundTripTestConfig, t *testi
 	must(backup.RecoverFiles(cfg, bucket, testConfig.S3Prefix, testRecoveryDir))
 
 	compareDirectories(testBaseDir, testRecoveryDir, t)
+
+	// Read the backup db and find all of the S3 keys that should exist.
+	db, err := backup.NewDB(dbFile)
+	must(err)
+	defer db.Close()
+
+	batchesInDb, err := db.GetExistingBatches(true)
+	must(err)
+
+	log.Printf("batches in db:")
+	for _, batch := range batchesInDb {
+		log.Printf("  batch: %s", batch.Path)
+		for _, filename := range batch.Filenames {
+			log.Printf("    filename: %s", filename)
+		}
+	}
+
+	// Make sure no filenames are duplicated across batches.
+	seenFilenames := make(map[string]struct{})
+	for _, batch := range batchesInDb {
+		for _, filename := range batch.Filenames {
+			if _, ok := seenFilenames[filename]; ok {
+				t.Fatalf("filename %s is duplicated across batches", filename)
+			}
+			seenFilenames[filename] = struct{}{}
+		}
+	}
+
+	batchesInS3, err := client.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
+		Bucket: aws.String(bucket),
+		Prefix: aws.String(testConfig.S3Prefix),
+	})
+	if err != nil {
+		t.Fatalf("error listing objects in S3: %+v", err)
+	}
+
+	log.Printf("batches in S3:")
+	for _, object := range batchesInS3.Contents {
+		log.Printf("  batch: %s", *object.Key)
+	}
+
+	// Make sure the objects in S3 match the batches in the db.
+	unexpectedBatches := make(map[string]struct{})
+	for _, object := range batchesInS3.Contents {
+		unexpectedBatches[*object.Key] = struct{}{}
+	}
+	for _, batch := range batchesInDb {
+		var batchKey string
+		if batch.IsSingleFile {
+			batchKey = fmt.Sprintf("%s/%s.gz", testConfig.S3Prefix, batch.Path)
+		} else {
+			if batch.Path == "." {
+				batchKey = fmt.Sprintf("%s/_files.tar.gz", testConfig.S3Prefix)
+			} else {
+				batchKey = fmt.Sprintf("%s/%s/_files.tar.gz", testConfig.S3Prefix, batch.Path)
+			}
+		}
+		log.Printf("observed batchKey: %s", batchKey)
+		delete(unexpectedBatches, batchKey)
+		found := false
+		for _, object := range batchesInS3.Contents {
+			if *object.Key == batchKey {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("batch %s not found in S3", batch.Path)
+		}
+	}
+	if len(unexpectedBatches) > 0 {
+		t.Fatalf("found unexpected batches in S3: %+v", unexpectedBatches)
+	}
 }
 
 func TestBasicRoundTrip(t *testing.T) {
@@ -387,7 +455,7 @@ func TestRoundTrip_WithLargeSizeThreshold(t *testing.T) {
 	client := s3.NewFromConfig(*cfg)
 	output, err := client.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
 		Bucket: aws.String(bucket),
-		Prefix: aws.String(prefixBase),
+		Prefix: aws.String(config.S3Prefix),
 	})
 	if err != nil {
 		log.Fatal(err)
