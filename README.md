@@ -18,6 +18,6 @@ before running tests. The script to run the dev docker will attach to the same n
 
 ## To Do
 
-- Wire up and test actual S3
+- Clean up logging
 - Upload the DB to storage, and check before upload/recovery whether the DB has changed since last upload
-- Move DB to some central location, maybe `~/.dbackup/<path_hash>/backup.db`
+- Config file vs. DB args (spf13/viper?)
