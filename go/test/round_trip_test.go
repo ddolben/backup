@@ -22,9 +22,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
-// TODO: test file deletion when it _doesn't_ change the batching strategy
-// TODO: test that changing the size threshold doesn't mess anything up
-
 const minioUrl = "http://localhost:9000"
 
 var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
@@ -130,6 +127,49 @@ func TestRoundTrip_SomeMultiFileBatches(t *testing.T) {
 	roundTripTest(testBaseDir, config, t)
 }
 
+func TestRoundTrip_WithAddsAndDeletes(t *testing.T) {
+	// Create test directory and write a bunch of files
+	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
+	must(err)
+
+	defer (func() {
+		must(os.RemoveAll(testBaseDir))
+	})()
+
+	// These should get grouped
+	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "c.txt"), 25))
+
+	// These should _not_ get grouped because one of the files is too big
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/one/two/three/a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/four/five/six/b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/four/five/six/big.txt"), 2000))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/seven/eight/nine/c.txt"), 25))
+
+	// These should get grouped together separately from the top-level files
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/one/two/three/a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/four/five/six/b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/seven/eight/nine/c.txt"), 25))
+
+	config := getDefaultTestConfig()
+	defer config.Cleanup()
+	config.SizeThreshold = 1000
+	roundTripTest(testBaseDir, config, t)
+
+	// Add and remove files such that the batching strategy does not change
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/top.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/four/five/six/d.txt"), 9))
+	must(os.Remove(filepath.Join(testBaseDir, "subdir-2/four/five/six/b.txt")))
+	// Make sure to also do this among the files that are single-file batches (the above are from
+	// multi-file batches)
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/one/two/three/d.txt"), 10))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/ham/bur/ger/withcheese.txt"), 13))
+	must(os.Remove(filepath.Join(testBaseDir, "subdir-1/one/two/three/a.txt")))
+
+	roundTripTest(testBaseDir, config, t)
+}
+
 func TestRoundTrip_BatchingChangesAcrossRuns(t *testing.T) {
 	// Create test directory and write a bunch of files
 	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
@@ -160,6 +200,9 @@ func TestRoundTrip_BatchingChangesAcrossRuns(t *testing.T) {
 	config.SizeThreshold = 1000
 	roundTripTest(testBaseDir, config, t)
 
+	// Make sure the batching strategy is as expected (described above)
+	assertBatchCount(t, testBaseDir, config.S3Prefix, 6)
+
 	// Remove the large file down the three, causing the entire directory hierarchy to collapse into
 	// one batch. Also tests that file deletion is working properly.
 	must(os.Remove(filepath.Join(testBaseDir, "subdir-1/four/five/six/big.txt")))
@@ -169,32 +212,55 @@ func TestRoundTrip_BatchingChangesAcrossRuns(t *testing.T) {
 	config.LeaveBucketContents = true
 	roundTripTest(testBaseDir, config, t)
 
-	// Check manually that there is only one batch in the db
-	dbFile := filepath.Join(testBaseDir, "backup.db")
-	db, err := backup.NewDB(dbFile)
-	must(err)
-	batchesInDb, err := db.GetExistingBatches(true)
-	must(err)
-	if len(batchesInDb) != 1 {
-		t.Fatalf("expected 1 batch in the db, got: %+v", batchesInDb)
-	}
+	// Now that we've removed the large file, we should have one big batch
+	assertBatchCount(t, testBaseDir, config.S3Prefix, 1)
+}
 
-	// Check manually for extraneous S3 files. There should now only be one in this prefix, since the
-	// smaller batches from the first run should have been cleaned up.
-	cfg := backup.GetMinioConfig(minioUrl)
-	client := s3.NewFromConfig(*cfg)
-	output, err := client.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
-		Bucket: aws.String(bucket),
-		Prefix: aws.String(config.S3Prefix),
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-	if len(output.Contents) > 1 {
-		t.Fatalf("expected just 1 S3 file, got: %+v", util.Map(output.Contents, func(o types.Object) string {
-			return *o.Key
-		}))
-	}
+func TestRoundTrip_SizeThresholdChanges(t *testing.T) {
+	// Create test directory and write a bunch of files
+	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
+	must(err)
+
+	defer (func() {
+		must(os.RemoveAll(testBaseDir))
+	})()
+
+	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "c.txt"), 25))
+
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/one/two/three/a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/four/five/six/b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/four/five/six/big.txt"), 2000))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/seven/eight/nine/c.txt"), 25))
+
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/one/two/three/a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/four/five/six/b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/seven/eight/nine/c.txt"), 25))
+
+	config := getDefaultTestConfig()
+	config.SizeThreshold = 100000
+	defer config.Cleanup()
+	roundTripTest(testBaseDir, config, t)
+
+	// There should only be one batch, since the threshold is high
+	assertBatchCount(t, testBaseDir, config.S3Prefix, 1)
+
+	// Run the test again, _without_ clearing the bucket (so we effectively get the same behavior as a
+	// non-fresh run in real life).
+	config.LeaveBucketContents = true
+	config.SizeThreshold = 1000
+	roundTripTest(testBaseDir, config, t)
+
+	// Now that we've reduced the size threshold, we should have two grouped batches and four files as
+	// single-file batches
+	assertBatchCount(t, testBaseDir, config.S3Prefix, 6)
+
+	// Change it back and make sure things still work as expected
+	config.LeaveBucketContents = true
+	config.SizeThreshold = 100000
+	roundTripTest(testBaseDir, config, t)
+	assertBatchCount(t, testBaseDir, config.S3Prefix, 1)
 }
 
 func TestRoundTrip_MultiRun(t *testing.T) {
@@ -555,5 +621,33 @@ func roundTripTest(testBaseDir string, testConfig *roundTripTestConfig, t *testi
 	}
 	if len(unexpectedBatches) > 0 {
 		t.Fatalf("found unexpected batches in S3: %+v", unexpectedBatches)
+	}
+}
+
+func assertBatchCount(t *testing.T, testBaseDir string, s3Prefix string, expected int) {
+	// Check the batch count in the DB
+	dbFile := filepath.Join(testBaseDir, "backup.db")
+	db, err := backup.NewDB(dbFile)
+	must(err)
+	batchesInDb, err := db.GetExistingBatches(true)
+	must(err)
+	if len(batchesInDb) != expected {
+		t.Fatalf("expected %d batch(es) in the db, got: %+v", expected, batchesInDb)
+	}
+
+	// Check the batch count in S3
+	cfg := backup.GetMinioConfig(minioUrl)
+	client := s3.NewFromConfig(*cfg)
+	output, err := client.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
+		Bucket: aws.String(bucket),
+		Prefix: aws.String(s3Prefix),
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if len(output.Contents) != expected {
+		t.Fatalf("expected %d S3 file(s), got: %+v", expected, util.Map(output.Contents, func(o types.Object) string {
+			return *o.Key
+		}))
 	}
 }
