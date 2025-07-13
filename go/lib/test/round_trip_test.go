@@ -13,9 +13,9 @@ import (
 	"strings"
 	"testing"
 
-	"local/backup/backup"
-	"local/backup/logging"
-	"local/backup/util"
+	"local/backup/lib/backup"
+	"local/backup/lib/logging"
+	"local/backup/lib/util"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"

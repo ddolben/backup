@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"local/backup/s3_helpers"
+	"local/backup/lib/s3_helpers"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"

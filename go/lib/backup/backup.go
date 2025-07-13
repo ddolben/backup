@@ -17,8 +17,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
-	"local/backup/logging"
-	"local/backup/util"
+	"local/backup/lib/logging"
+	"local/backup/lib/util"
 )
 
 // TODO: return errors rather than Fatal-ing

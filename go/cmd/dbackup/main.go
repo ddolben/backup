@@ -3,8 +3,8 @@ package main
 import (
 	"flag"
 
-	"local/backup/backup"
-	"local/backup/logging"
+	"local/backup/lib/backup"
+	"local/backup/lib/logging"
 )
 
 func main() {
