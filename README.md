@@ -4,10 +4,6 @@ A set of tools for personal file backups to S3.
 
 ## Local setup
 
-```
-brew install rclone
-```
-
 ### minio to simulate S3
 
 ### Testing
@@ -20,3 +16,8 @@ docker compose up -d
 
 before running tests. The script to run the dev docker will attach to the same network.
 
+## To Do
+
+- Wire up and test actual S3
+- Upload the DB to storage, and check before upload/recovery whether the DB has changed since last upload
+- Move DB to some central location, maybe `~/.dbackup/<path_hash>/backup.db`
