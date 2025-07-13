@@ -18,6 +18,5 @@ before running tests. The script to run the dev docker will attach to the same n
 
 ## To Do
 
-- Clean up logging
 - Upload the DB to storage, and check before upload/recovery whether the DB has changed since last upload
 - Config file vs. DB args (spf13/viper?)

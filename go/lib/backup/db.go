@@ -89,6 +89,24 @@ func (db *DB) DumpDB() error {
 	return nil
 }
 
+func (db *DB) GetAllFiles() ([]string, error) {
+	rows, err := db.db.Query("SELECT path FROM files")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var files []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, err
+		}
+		files = append(files, path)
+	}
+	return files, nil
+}
+
 func (db *DB) GetFileInfo(path string) (*FileInfo, error) {
 	row := db.db.QueryRow("SELECT mod_time, hash, batch FROM files WHERE path = ?", path)
 	if row.Err() != nil {

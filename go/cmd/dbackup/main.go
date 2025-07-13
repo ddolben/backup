@@ -78,8 +78,14 @@ func main() {
 	logger.Infof("using s3 prefix: s3://%s/%s", bucket, s3Prefix)
 
 	if *fDoRecover {
-		backup.RecoverFiles(cfg, bucket, s3Prefix, *fRootDir)
+		err := backup.RecoverFiles(cfg, bucket, s3Prefix, *fRootDir)
+		if err != nil {
+			log.Fatalf("error recovering files: %+v", err)
+		}
 	} else {
-		backup.BackupFiles(logger, cfg, dbFile, *fRootDir, bucket, s3Prefix, *fSizeThreshold, *fDryRun)
+		err := backup.BackupFiles(logger, cfg, dbFile, *fRootDir, bucket, s3Prefix, *fSizeThreshold, *fDryRun)
+		if err != nil {
+			log.Fatalf("error backing up files: %+v", err)
+		}
 	}
 }

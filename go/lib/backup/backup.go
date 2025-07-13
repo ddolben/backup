@@ -46,9 +46,11 @@ func BackupFiles(
 	// Clean up the root path, since it was user input (e.g. resolve '..' elements).
 	cleanRoot := filepath.Clean(localRoot)
 
+	summary := &backupSummary{}
+
 	// Scan through all the files in the directory and arrange them into batches.
 	logger.Verbosef("> Scanning files")
-	batches, err := getFilesToBackup(logger, db, cleanRoot, cleanRoot, sizeThreshold)
+	batches, err := getFilesToBackup(logger, db, cleanRoot, cleanRoot, sizeThreshold, summary)
 	if err != nil {
 		log.Fatalf("error finding files to backup: %v", err)
 	}
@@ -57,6 +59,17 @@ func BackupFiles(
 		log.Fatalf("error finding batches to delete: %v", err)
 	}
 	logger.Verbosef("< Scanning files")
+
+	// Diff the list of files in the db with the list of files in the directory
+	deletedFiles, err := getFilesNotInBatches(db, batches)
+	if err != nil {
+		log.Fatalf("error getting files in db: %v", err)
+	}
+	for _, file := range deletedFiles {
+		summary.AddFile(file, backupReasonRemoved)
+	}
+	// Print the summary
+	summary.Print(logger)
 
 	// Log the batches for debugging
 	logger.Verbosef("> Found files")
@@ -291,21 +304,21 @@ func fileHasChangedBatch(db *DB, root string, path string, batch string) (bool, 
 	return batch != fi.Batch, nil
 }
 
-func doesFileNeedBackup(db *DB, path string, info fs.FileInfo) (bool, error) {
+func doesFileNeedBackup(db *DB, path string, info fs.FileInfo) (bool, backupReason, error) {
 	fi, err := db.GetFileInfo(path)
 	if err != nil && err != sql.ErrNoRows {
-		return false, err
+		return false, backupReasonNone, err
 	}
 
 	if err == sql.ErrNoRows {
-		return true, nil
+		return true, backupReasonAdded, nil
 	}
 
 	modTimeChanged := !info.ModTime().Truncate(time.Millisecond).Equal(fi.ModTime.Truncate(time.Millisecond))
 
 	hash, err := getFileHash(path)
 	if err != nil {
-		return false, err
+		return false, backupReasonNone, err
 	}
 	hashChanged := hash != fi.Hash
 
@@ -315,9 +328,9 @@ func doesFileNeedBackup(db *DB, path string, info fs.FileInfo) (bool, error) {
 	// Otherwise default to uploading the file, because we'd rather send some duplicative data than
 	// not back up a file.
 	if !modTimeChanged && !hashChanged {
-		return false, nil
+		return false, backupReasonNone, nil
 	}
-	return true, nil
+	return true, backupReasonChanged, nil
 }
 
 type QueueItem struct {
@@ -381,7 +394,14 @@ func sumSizes[T WithSize](arr []T) int64 {
 // For each directory, determine the total size of all files in the tree.
 // If the sum is greater than the max, remove the largest subdirectory (mark it as to-be-zipped),
 // then repeat until we are below the max.
-func getFilesToBackup(logger logging.Logger, db *DB, root string, searchPath string, sizeThreshold int64) ([]*BackupBatch, error) {
+func getFilesToBackup(
+	logger logging.Logger,
+	db *DB,
+	root string,
+	searchPath string,
+	sizeThreshold int64,
+	summary *backupSummary,
+) ([]*BackupBatch, error) {
 	// Get files in directory
 	files, err := os.ReadDir(searchPath)
 	if err != nil {
@@ -396,7 +416,7 @@ func getFilesToBackup(logger logging.Logger, db *DB, root string, searchPath str
 		logger.Verbosef("scanning path %q", path)
 
 		if file.IsDir() {
-			subBatches, err := getFilesToBackup(logger, db, root, path, sizeThreshold)
+			subBatches, err := getFilesToBackup(logger, db, root, path, sizeThreshold, summary)
 			if err != nil {
 				return nil, err
 			}
@@ -413,7 +433,7 @@ func getFilesToBackup(logger logging.Logger, db *DB, root string, searchPath str
 			if err != nil {
 				log.Fatal(err)
 			}
-			isDirty, err := doesFileNeedBackup(db, path, info)
+			isDirty, reason, err := doesFileNeedBackup(db, path, info)
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -422,6 +442,7 @@ func getFilesToBackup(logger logging.Logger, db *DB, root string, searchPath str
 			if err != nil {
 				log.Fatal(err)
 			}
+			summary.AddFile(path, reason)
 			dirFiles = append(dirFiles, &BackupFile{
 				Path:     relPath,
 				FileSize: info.Size(),
@@ -563,4 +584,29 @@ func getBatchesToDelete(db *DB, batches []*BackupBatch) ([]BatchMeta, error) {
 	}
 
 	return batchesToDelete, nil
+}
+
+func getFilesNotInBatches(db *DB, batches []*BackupBatch) ([]string, error) {
+	// Find all files in the backup plan (dirty or not)
+	filesInBatches := make(map[string]struct{})
+	for _, batch := range batches {
+		for _, file := range batch.Files {
+			filesInBatches[file.Path] = struct{}{}
+		}
+	}
+
+	// Find all files in the db
+	dbFiles, err := db.GetAllFiles()
+	if err != nil {
+		return nil, fmt.Errorf("error getting files in db: %v", err)
+	}
+
+	// Find all files in the db that are not in the backup plan
+	var filesNotInBatches []string
+	for _, file := range dbFiles {
+		if _, ok := filesInBatches[file]; !ok {
+			filesNotInBatches = append(filesNotInBatches, file)
+		}
+	}
+	return filesNotInBatches, nil
 }
