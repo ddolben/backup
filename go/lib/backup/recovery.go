@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"local/backup/lib/logging"
 	"local/backup/lib/s3_helpers"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -15,8 +16,8 @@ import (
 )
 
 // TODO: return errors vs. Fatal-ing
-func RecoverFiles(cfg *aws.Config, bucket string, prefix string, localRoot string) error {
-	log.Println("> Recovering files")
+func RecoverFiles(logger logging.Logger, cfg *aws.Config, bucket string, prefixBase string, name string, localRoot string) error {
+	prefix := filepath.Join(prefixBase, name)
 
 	// Create an Amazon S3 service client
 	client := s3.NewFromConfig(*cfg)
@@ -26,15 +27,17 @@ func RecoverFiles(cfg *aws.Config, bucket string, prefix string, localRoot strin
 	}
 
 	keyPrefix := prefix
-	if !strings.HasSuffix(prefix, "/") {
+	if !strings.HasSuffix(keyPrefix, "/") {
 		keyPrefix += "/"
 	}
+
+	logger.Verbosef("> Recovering files from %s", keyPrefix)
 
 	// Get the first page of results for ListObjectsV2 for a bucket
 	output, err := client.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
 		Bucket: aws.String(bucket),
 		// Return only files with the given prefix
-		Prefix: aws.String(prefix),
+		Prefix: aws.String(keyPrefix),
 	})
 	if err != nil {
 		log.Fatal(err)

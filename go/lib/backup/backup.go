@@ -22,16 +22,21 @@ import (
 )
 
 // TODO: return errors rather than Fatal-ing
+// TODO: options argument (with validation)
 func BackupFiles(
 	logger logging.Logger,
 	cfg *aws.Config,
 	dbFile string,
 	localRoot string,
 	bucket string,
-	prefix string,
+	prefixBase string,
+	name string,
 	sizeThreshold int64,
 	dryRun bool,
 ) error {
+	prefix := filepath.Join(prefixBase, name)
+	logger.Infof("using s3 prefix: s3://%s/%s", bucket, prefix)
+
 	logger.Debugf("size threshold: %d", sizeThreshold)
 
 	// Load the db
@@ -105,25 +110,41 @@ func BackupFiles(
 
 	// Delete any batches in the existing backup that no longer exist. Do this first as a precaution
 	// so we don't accidentally delete files that should still be in the backup.
-	logger.Verbosef("> Clearing unnecessary batches")
+	logger.Verbosef(">> Clearing unnecessary batches")
 	for _, batch := range batchesToDelete {
 		err = deleteBatch(logger, db, client, cleanRoot, bucket, prefix, batch, dryRun)
 		if err != nil {
 			log.Fatalf("error deleting batch: %+v", err)
 		}
 	}
-	logger.Verbosef("< Clearing unnecessary batches")
+	logger.Verbosef("<< Clearing unnecessary batches")
 
 	// Backup all batches that have dirty files
+	logger.Verbosef(">> Backing up batches")
 	for _, batch := range batches {
 		err = backupBatch(logger, db, client, cleanRoot, bucket, prefix, batch, dryRun)
 		if err != nil {
 			log.Fatalf("error backing up batch: %+v", err)
 		}
 	}
+	logger.Verbosef("<< Backing up batches")
 	logger.Verbosef("< Backing up files")
 
+	logger.Verbosef("> Backing up db")
+	// Back up the DB file to the S3 prefix
+	err = backupDB(logger, client, dbFile, bucket, prefixBase)
+	if err != nil {
+		log.Fatalf("error backing up db: %+v", err)
+	}
+	logger.Verbosef("< Backing up db")
+
 	return nil
+}
+
+func backupDB(logger logging.Logger, client *s3.Client, dbFile string, bucket string, prefix string) error {
+	dir := filepath.Dir(dbFile)
+	file := filepath.Base(dbFile)
+	return backupFile(logger, client, bucket, prefix, dir, file)
 }
 
 func backupBatch(

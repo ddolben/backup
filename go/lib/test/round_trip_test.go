@@ -27,31 +27,21 @@ const minioUrl = "http://localhost:9000"
 var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
 func TestRoundTrip_Basic(t *testing.T) {
-	// Create test directory and write a bunch of files
-	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
-	must(err)
-
-	defer (func() {
-		must(os.RemoveAll(testBaseDir))
-	})()
+	config := getDefaultTestConfig()
+	defer config.Cleanup()
+	testBaseDir := config.TestBaseDir
 
 	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
 	must(createTestFile(filepath.Join(testBaseDir, "b.txt"), 9))
 	must(createTestFile(filepath.Join(testBaseDir, "c.txt"), 25))
 
-	config := getDefaultTestConfig()
-	defer config.Cleanup()
-	roundTripTest(testBaseDir, config, t)
+	roundTripTest(config, t)
 }
 
 func TestRoundTrip_WithSubdirectories_AllSingleFileBatches(t *testing.T) {
-	// Create test directory and write a bunch of files
-	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
-	must(err)
-
-	defer (func() {
-		must(os.RemoveAll(testBaseDir))
-	})()
+	config := getDefaultTestConfig()
+	defer config.Cleanup()
+	testBaseDir := config.TestBaseDir
 
 	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
 	must(createTestFile(filepath.Join(testBaseDir, "b.txt"), 9))
@@ -65,19 +55,13 @@ func TestRoundTrip_WithSubdirectories_AllSingleFileBatches(t *testing.T) {
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/b.txt"), 9))
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/c.txt"), 25))
 
-	config := getDefaultTestConfig()
-	defer config.Cleanup()
-	roundTripTest(testBaseDir, config, t)
+	roundTripTest(config, t)
 }
 
 func TestRoundTrip_WithDeepSubdirectories_AllSingleFileBatches(t *testing.T) {
-	// Create test directory and write a bunch of files
-	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
-	must(err)
-
-	defer (func() {
-		must(os.RemoveAll(testBaseDir))
-	})()
+	config := getDefaultTestConfig()
+	defer config.Cleanup()
+	testBaseDir := config.TestBaseDir
 
 	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
 	must(createTestFile(filepath.Join(testBaseDir, "b.txt"), 9))
@@ -91,19 +75,13 @@ func TestRoundTrip_WithDeepSubdirectories_AllSingleFileBatches(t *testing.T) {
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/with/many/directories/b.txt"), 9))
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/with/many/directories/c.txt"), 25))
 
-	config := getDefaultTestConfig()
-	defer config.Cleanup()
-	roundTripTest(testBaseDir, config, t)
+	roundTripTest(config, t)
 }
 
 func TestRoundTrip_SomeMultiFileBatches(t *testing.T) {
-	// Create test directory and write a bunch of files
-	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
-	must(err)
-
-	defer (func() {
-		must(os.RemoveAll(testBaseDir))
-	})()
+	config := getDefaultTestConfig()
+	defer config.Cleanup()
+	testBaseDir := config.TestBaseDir
 
 	// These should get grouped
 	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
@@ -121,20 +99,14 @@ func TestRoundTrip_SomeMultiFileBatches(t *testing.T) {
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/four/five/six/b.txt"), 9))
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/seven/eight/nine/c.txt"), 25))
 
-	config := getDefaultTestConfig()
-	defer config.Cleanup()
 	config.SizeThreshold = 1000
-	roundTripTest(testBaseDir, config, t)
+	roundTripTest(config, t)
 }
 
 func TestRoundTrip_WithAddsAndDeletes(t *testing.T) {
-	// Create test directory and write a bunch of files
-	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
-	must(err)
-
-	defer (func() {
-		must(os.RemoveAll(testBaseDir))
-	})()
+	config := getDefaultTestConfig()
+	defer config.Cleanup()
+	testBaseDir := config.TestBaseDir
 
 	// These should get grouped
 	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
@@ -152,10 +124,8 @@ func TestRoundTrip_WithAddsAndDeletes(t *testing.T) {
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/four/five/six/b.txt"), 9))
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/seven/eight/nine/c.txt"), 25))
 
-	config := getDefaultTestConfig()
-	defer config.Cleanup()
 	config.SizeThreshold = 1000
-	roundTripTest(testBaseDir, config, t)
+	roundTripTest(config, t)
 
 	// Add and remove files such that the batching strategy does not change
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/top.txt"), 5))
@@ -167,17 +137,13 @@ func TestRoundTrip_WithAddsAndDeletes(t *testing.T) {
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/ham/bur/ger/withcheese.txt"), 13))
 	must(os.Remove(filepath.Join(testBaseDir, "subdir-1/one/two/three/a.txt")))
 
-	roundTripTest(testBaseDir, config, t)
+	roundTripTest(config, t)
 }
 
 func TestRoundTrip_BatchingChangesAcrossRuns(t *testing.T) {
-	// Create test directory and write a bunch of files
-	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
-	must(err)
-
-	defer (func() {
-		must(os.RemoveAll(testBaseDir))
-	})()
+	config := getDefaultTestConfig()
+	defer config.Cleanup()
+	testBaseDir := config.TestBaseDir
 
 	// These should get grouped
 	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
@@ -195,13 +161,11 @@ func TestRoundTrip_BatchingChangesAcrossRuns(t *testing.T) {
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/four/five/six/b.txt"), 9))
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/seven/eight/nine/c.txt"), 25))
 
-	config := getDefaultTestConfig()
-	defer config.Cleanup()
 	config.SizeThreshold = 1000
-	roundTripTest(testBaseDir, config, t)
+	roundTripTest(config, t)
 
 	// Make sure the batching strategy is as expected (described above)
-	assertBatchCount(t, testBaseDir, config.S3Prefix, 6)
+	assertBatchCount(t, config.DBFile, config.FullS3Prefix, 6)
 
 	// Remove the large file down the three, causing the entire directory hierarchy to collapse into
 	// one batch. Also tests that file deletion is working properly.
@@ -210,20 +174,16 @@ func TestRoundTrip_BatchingChangesAcrossRuns(t *testing.T) {
 	// Run the test again, _without_ clearing the bucket (so we effectively get the same behavior as a
 	// non-fresh run in real life).
 	config.LeaveBucketContents = true
-	roundTripTest(testBaseDir, config, t)
+	roundTripTest(config, t)
 
 	// Now that we've removed the large file, we should have one big batch
-	assertBatchCount(t, testBaseDir, config.S3Prefix, 1)
+	assertBatchCount(t, config.DBFile, config.FullS3Prefix, 1)
 }
 
 func TestRoundTrip_SizeThresholdChanges(t *testing.T) {
-	// Create test directory and write a bunch of files
-	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
-	must(err)
-
-	defer (func() {
-		must(os.RemoveAll(testBaseDir))
-	})()
+	config := getDefaultTestConfig()
+	defer config.Cleanup()
+	testBaseDir := config.TestBaseDir
 
 	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
 	must(createTestFile(filepath.Join(testBaseDir, "b.txt"), 9))
@@ -238,39 +198,33 @@ func TestRoundTrip_SizeThresholdChanges(t *testing.T) {
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/four/five/six/b.txt"), 9))
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/seven/eight/nine/c.txt"), 25))
 
-	config := getDefaultTestConfig()
 	config.SizeThreshold = 100000
-	defer config.Cleanup()
-	roundTripTest(testBaseDir, config, t)
+	roundTripTest(config, t)
 
 	// There should only be one batch, since the threshold is high
-	assertBatchCount(t, testBaseDir, config.S3Prefix, 1)
+	assertBatchCount(t, config.DBFile, config.FullS3Prefix, 1)
 
 	// Run the test again, _without_ clearing the bucket (so we effectively get the same behavior as a
 	// non-fresh run in real life).
 	config.LeaveBucketContents = true
 	config.SizeThreshold = 1000
-	roundTripTest(testBaseDir, config, t)
+	roundTripTest(config, t)
 
 	// Now that we've reduced the size threshold, we should have two grouped batches and four files as
 	// single-file batches
-	assertBatchCount(t, testBaseDir, config.S3Prefix, 6)
+	assertBatchCount(t, config.DBFile, config.FullS3Prefix, 6)
 
 	// Change it back and make sure things still work as expected
 	config.LeaveBucketContents = true
 	config.SizeThreshold = 100000
-	roundTripTest(testBaseDir, config, t)
-	assertBatchCount(t, testBaseDir, config.S3Prefix, 1)
+	roundTripTest(config, t)
+	assertBatchCount(t, config.DBFile, config.FullS3Prefix, 1)
 }
 
 func TestRoundTrip_MultiRun(t *testing.T) {
-	// Create test directory and write a bunch of files
-	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
-	must(err)
-
-	defer (func() {
-		must(os.RemoveAll(testBaseDir))
-	})()
+	config := getDefaultTestConfig()
+	defer config.Cleanup()
+	testBaseDir := config.TestBaseDir
 
 	type runFileSpec struct {
 		Path string
@@ -319,15 +273,12 @@ func TestRoundTrip_MultiRun(t *testing.T) {
 		),
 	})
 
-	config := getDefaultTestConfig()
-	defer config.Cleanup()
-
 	for i, runSpec := range runSpecs {
 		for _, fileSpec := range runSpec.Files {
 			must(createTestFile(filepath.Join(testBaseDir, fileSpec.Path), fileSpec.Size))
 		}
 		fmt.Printf("+++ running round trip test for run %d\n", i)
-		roundTripTest(testBaseDir, config, t)
+		roundTripTest(config, t)
 		fmt.Printf("--- finished round trip test for run %d\n", i)
 	}
 }
@@ -502,31 +453,51 @@ const (
 )
 
 type roundTripTestConfig struct {
+	BackupName    string
+	TestBaseDir   string
+	DBFile        string
 	SizeThreshold int64
 	// If true, doesn't clear out the S3 bucket's contents. Useful for running multiple tests in a row
 	// to validate dirty checks.
 	LeaveBucketContents bool
 	S3Prefix            string
+	FullS3Prefix        string
 	Cleanup             func()
 }
 
 func getDefaultTestConfig() *roundTripTestConfig {
 	myPrefix := prefixBase + "-" + randSeq(16)
 
+	testBaseDir, err := os.MkdirTemp("/tmp", "dave-backup-test-")
+	must(err)
+	testDBDir, err := os.MkdirTemp("/tmp", "dave-backup-db-")
+	must(err)
+
+	backupName := "test-backup"
+	dbFile := filepath.Join(testDBDir, fmt.Sprintf("%s.db", backupName))
+
 	return &roundTripTestConfig{
+		BackupName:    backupName,
+		TestBaseDir:   testBaseDir,
+		DBFile:        dbFile,
 		SizeThreshold: 10,
 		S3Prefix:      myPrefix,
+		FullS3Prefix:  filepath.Join(myPrefix, backupName),
 		Cleanup: func() {
 			cfg := backup.GetMinioConfig(minioUrl)
 			client := s3.NewFromConfig(*cfg)
 			must(clearBucket(client, bucket, myPrefix))
+
+			must(os.RemoveAll(testBaseDir))
+			must(os.RemoveAll(testDBDir))
 		},
 	}
 }
 
-func roundTripTest(testBaseDir string, testConfig *roundTripTestConfig, t *testing.T) {
+func roundTripTest(testConfig *roundTripTestConfig, t *testing.T) {
 	testRecoveryDir, err := os.MkdirTemp("/tmp", "dave-recovery-test-")
 	must(err)
+	testBaseDir := testConfig.TestBaseDir
 
 	defer (func() {
 		must(os.RemoveAll(testRecoveryDir))
@@ -534,7 +505,6 @@ func roundTripTest(testBaseDir string, testConfig *roundTripTestConfig, t *testi
 
 	cfg := backup.GetMinioConfig(minioUrl)
 	client := s3.NewFromConfig(*cfg)
-	dbFile := filepath.Join(testBaseDir, "backup.db")
 
 	if !testConfig.LeaveBucketContents {
 		must(clearBucket(client, bucket, testConfig.S3Prefix))
@@ -545,13 +515,23 @@ func roundTripTest(testBaseDir string, testConfig *roundTripTestConfig, t *testi
 	}
 
 	// a and b but not c will be tarred/gzipped
-	must(backup.BackupFiles(logger, cfg, dbFile, testBaseDir, bucket, testConfig.S3Prefix, testConfig.SizeThreshold, false))
-	must(backup.RecoverFiles(cfg, bucket, testConfig.S3Prefix, testRecoveryDir))
+	must(backup.BackupFiles(
+		logger,
+		cfg,
+		testConfig.DBFile,
+		testBaseDir,
+		bucket,
+		testConfig.S3Prefix,
+		testConfig.BackupName,
+		testConfig.SizeThreshold,
+		false,
+	))
+	must(backup.RecoverFiles(logger, cfg, bucket, testConfig.S3Prefix, testConfig.BackupName, testRecoveryDir))
 
 	compareDirectories(testBaseDir, testRecoveryDir, t)
 
 	// Read the backup db and find all of the S3 keys that should exist.
-	db, err := backup.NewDB(dbFile)
+	db, err := backup.NewDB(testConfig.DBFile)
 	must(err)
 	defer db.Close()
 
@@ -590,20 +570,29 @@ func roundTripTest(testBaseDir string, testConfig *roundTripTestConfig, t *testi
 		log.Printf("  batch: %s", *object.Key)
 	}
 
-	// Make sure the objects in S3 match the batches in the db.
+	// Make a map of all the objects in S3 so we can check for unexpected ones.
 	unexpectedBatches := make(map[string]struct{})
 	for _, object := range batchesInS3.Contents {
 		unexpectedBatches[*object.Key] = struct{}{}
 	}
+
+	// Check that the DB is present in S3, and delete it from the map.
+	dbKey := fmt.Sprintf("%s/%s.db.gz", testConfig.S3Prefix, testConfig.BackupName)
+	if _, ok := unexpectedBatches[dbKey]; !ok {
+		t.Fatalf("backup db not found in S3: %s", dbKey)
+	}
+	delete(unexpectedBatches, dbKey)
+
+	// Make sure the objects in S3 match the batches in the db.
 	for _, batch := range batchesInDb {
 		var batchKey string
 		if batch.IsSingleFile {
-			batchKey = fmt.Sprintf("%s/%s.gz", testConfig.S3Prefix, batch.Path)
+			batchKey = fmt.Sprintf("%s/%s.gz", testConfig.FullS3Prefix, batch.Path)
 		} else {
 			if batch.Path == "." {
-				batchKey = fmt.Sprintf("%s/_files.tar.gz", testConfig.S3Prefix)
+				batchKey = fmt.Sprintf("%s/_files.tar.gz", testConfig.FullS3Prefix)
 			} else {
-				batchKey = fmt.Sprintf("%s/%s/_files.tar.gz", testConfig.S3Prefix, batch.Path)
+				batchKey = fmt.Sprintf("%s/%s/_files.tar.gz", testConfig.FullS3Prefix, batch.Path)
 			}
 		}
 		log.Printf("observed batchKey: %s", batchKey)
@@ -624,9 +613,8 @@ func roundTripTest(testBaseDir string, testConfig *roundTripTestConfig, t *testi
 	}
 }
 
-func assertBatchCount(t *testing.T, testBaseDir string, s3Prefix string, expected int) {
+func assertBatchCount(t *testing.T, dbFile string, s3Prefix string, expected int) {
 	// Check the batch count in the DB
-	dbFile := filepath.Join(testBaseDir, "backup.db")
 	db, err := backup.NewDB(dbFile)
 	must(err)
 	batchesInDb, err := db.GetExistingBatches(true)
@@ -640,7 +628,7 @@ func assertBatchCount(t *testing.T, testBaseDir string, s3Prefix string, expecte
 	client := s3.NewFromConfig(*cfg)
 	output, err := client.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
 		Bucket: aws.String(bucket),
-		Prefix: aws.String(s3Prefix),
+		Prefix: aws.String(s3Prefix + "/"),
 	})
 	if err != nil {
 		log.Fatal(err)

@@ -21,7 +21,7 @@ func main() {
 	fSizeThreshold := flag.Int64("size_threshold", 1024*1024, "defines the threshold above which a file gets backed up by itself, as well as the max size of a directory to get zipped together")
 	// TODO: default value
 	fBucket := flag.String("bucket", "my-bucket", "S3 bucket")
-	fPrefix := flag.String("prefix", "", "Custom prefix for the files stored in the S3 bucket")
+	fPrefix := flag.String("prefix", "backups", "Custom prefix for the files stored in the S3 bucket")
 	fDoRecover := flag.Bool("recover", false, "If true, recovers FROM the remote location TO the local location")
 	fDryRun := flag.Bool("dry_run", true, "if true, print a plan and don't actually send any files to the backup destination")
 	fLogLevel := flag.String("log_level", "info", "controls logging verbosity")
@@ -58,10 +58,6 @@ func main() {
 		hashBs := md5.Sum([]byte(filepath.Clean(absRootDir)))
 		backupName = fmt.Sprintf("%x", hashBs)
 	}
-	s3Prefix := *fPrefix
-	if s3Prefix == "" {
-		s3Prefix = filepath.Join("backups", backupName)
-	}
 
 	bucket := *fBucket
 
@@ -75,15 +71,24 @@ func main() {
 		dbFile = filepath.Join(homeDir, ".dbackup", fmt.Sprintf("%s.db", backupName))
 	}
 	logger.Infof("using db file: %s", dbFile)
-	logger.Infof("using s3 prefix: s3://%s/%s", bucket, s3Prefix)
 
 	if *fDoRecover {
-		err := backup.RecoverFiles(cfg, bucket, s3Prefix, *fRootDir)
+		err := backup.RecoverFiles(logger, cfg, bucket, *fPrefix, backupName, *fRootDir)
 		if err != nil {
 			log.Fatalf("error recovering files: %+v", err)
 		}
 	} else {
-		err := backup.BackupFiles(logger, cfg, dbFile, *fRootDir, bucket, s3Prefix, *fSizeThreshold, *fDryRun)
+		err := backup.BackupFiles(
+			logger,
+			cfg,
+			dbFile,
+			*fRootDir,
+			bucket,
+			*fPrefix,
+			backupName,
+			*fSizeThreshold,
+			*fDryRun,
+		)
 		if err != nil {
 			log.Fatalf("error backing up files: %+v", err)
 		}
