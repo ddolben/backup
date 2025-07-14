@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 func decompressFile(sourcePath string, destinationDir string) (string, error) {
@@ -108,6 +109,12 @@ func unTar(path string, destinationDir string) error {
 
 			// copy over contents
 			if _, err := io.Copy(f, tr); err != nil {
+				return err
+			}
+
+			// Set the modtime to match the tar archive's header.
+			err = os.Chtimes(target, time.Now(), header.ModTime)
+			if err != nil {
 				return err
 			}
 

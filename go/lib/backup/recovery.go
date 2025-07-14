@@ -15,8 +15,21 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
+type RecoveryOptions struct {
+	Force bool
+}
+
 // TODO: return errors vs. Fatal-ing
-func RecoverFiles(logger logging.Logger, cfg *aws.Config, dbFile string, bucket string, prefixBase string, name string, localRoot string) error {
+func RecoverFiles(
+	logger logging.Logger,
+	cfg *aws.Config,
+	dbFile string,
+	bucket string,
+	prefixBase string,
+	name string,
+	localRoot string,
+	options RecoveryOptions,
+) error {
 	prefix := filepath.Join(prefixBase, name)
 
 	// Create an Amazon S3 service client
@@ -35,7 +48,11 @@ func RecoverFiles(logger logging.Logger, cfg *aws.Config, dbFile string, bucket 
 	if len(changes) > 0 {
 		logger.Infof("files have changed in storage since the last backup or recovery, aborting:")
 		printChanges(changes)
-		return fmt.Errorf("files have changed in storage since the last backup or recovery")
+		if options.Force {
+			logger.Infof("forcing recovery despite changes in storage")
+		} else {
+			return fmt.Errorf("files have changed in storage since the last backup or recovery")
+		}
 	}
 
 	keyPrefix := prefix
@@ -61,6 +78,9 @@ func RecoverFiles(logger logging.Logger, cfg *aws.Config, dbFile string, bucket 
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	// TODO: integrity check between files and db?
+	// TODO: only download changes?
 
 	for _, object := range output.Contents {
 		log.Printf("key=%s size=%d", aws.ToString(object.Key), object.Size)
@@ -89,6 +109,9 @@ func RecoverFiles(logger logging.Logger, cfg *aws.Config, dbFile string, bucket 
 			os.Remove(localPath)
 		}
 	}
+
+	// Go through the db and update all the files' modtimes to match the remote DB.
+	// TODO: can we just get the decompression utility to do this?
 
 	log.Println("< Recovering files")
 

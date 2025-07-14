@@ -26,6 +26,7 @@ func main() {
 	fDryRun := flag.Bool("dry_run", true, "if true, print a plan and don't actually send any files to the backup destination")
 	fLogLevel := flag.String("log_level", "info", "controls logging verbosity")
 	fS3Url := flag.String("s3_url", "http://localhost:9000", "URL of S3 service")
+	fForce := flag.Bool("force", false, "if true, will overwrite any existing files in the remote backup regardless of the check")
 	flag.Parse()
 
 	var cfg *aws.Config
@@ -78,7 +79,18 @@ func main() {
 	logger.Infof("using db file: %s", dbFile)
 
 	if *fDoRecover {
-		err := backup.RecoverFiles(logger, cfg, dbFile, bucket, *fPrefix, backupName, *fRootDir)
+		err := backup.RecoverFiles(
+			logger,
+			cfg,
+			dbFile,
+			bucket,
+			*fPrefix,
+			backupName,
+			*fRootDir,
+			backup.RecoveryOptions{
+				Force: *fForce,
+			},
+		)
 		if err != nil {
 			log.Fatalf("error recovering files: %+v", err)
 		}
@@ -92,7 +104,10 @@ func main() {
 			*fPrefix,
 			backupName,
 			*fSizeThreshold,
-			*fDryRun,
+			backup.BackupOptions{
+				DryRun: *fDryRun,
+				Force:  *fForce,
+			},
 		)
 		if err != nil {
 			log.Fatalf("error backing up files: %+v", err)

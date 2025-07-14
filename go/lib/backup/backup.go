@@ -21,6 +21,11 @@ import (
 	"local/backup/lib/util"
 )
 
+type BackupOptions struct {
+	Force  bool
+	DryRun bool
+}
+
 // TODO: return errors rather than Fatal-ing
 // TODO: options argument (with validation)
 func BackupFiles(
@@ -32,7 +37,7 @@ func BackupFiles(
 	prefixBase string,
 	name string,
 	sizeThreshold int64,
-	dryRun bool,
+	options BackupOptions,
 ) error {
 	prefix := filepath.Join(prefixBase, name)
 	logger.Infof("using s3 prefix: s3://%s/%s", bucket, prefix)
@@ -60,7 +65,11 @@ func BackupFiles(
 	if len(changes) > 0 {
 		logger.Infof("files have changed in storage since the last backup, aborting:")
 		printChanges(changes)
-		return fmt.Errorf("files have changed in storage since the last backup")
+		if options.Force {
+			logger.Infof("forcing backup despite changes in storage")
+		} else {
+			return fmt.Errorf("files have changed in storage since the last backup")
+		}
 	}
 
 	summary := &backupSummary{}
@@ -83,7 +92,7 @@ func BackupFiles(
 		log.Fatalf("error getting files in db: %v", err)
 	}
 	for _, file := range deletedFiles {
-		summary.AddFile(file, backupReasonRemoved)
+		summary.AddFile(file, backupOpRemove)
 	}
 	// Print the summary
 	summary.Print(logger)
@@ -124,7 +133,7 @@ func BackupFiles(
 	// so we don't accidentally delete files that should still be in the backup.
 	logger.Verbosef(">> Clearing unnecessary batches")
 	for _, batch := range batchesToDelete {
-		err = deleteBatch(logger, db, client, cleanRoot, bucket, prefix, batch, dryRun)
+		err = deleteBatch(logger, db, client, cleanRoot, bucket, prefix, batch, options.DryRun)
 		if err != nil {
 			log.Fatalf("error deleting batch: %+v", err)
 		}
@@ -134,7 +143,7 @@ func BackupFiles(
 	// Backup all batches that have dirty files
 	logger.Verbosef(">> Backing up batches")
 	for _, batch := range batches {
-		err = backupBatch(logger, db, client, cleanRoot, bucket, prefix, batch, dryRun)
+		err = backupBatch(logger, db, client, cleanRoot, bucket, prefix, batch, options.DryRun)
 		if err != nil {
 			log.Fatalf("error backing up batch: %+v", err)
 		}
@@ -143,7 +152,7 @@ func BackupFiles(
 	logger.Verbosef("< Backing up files")
 
 	// Back up the DB file to the S3 prefix
-	if !dryRun {
+	if !options.DryRun {
 		logger.Verbosef("> Backing up db")
 		err = backupDB(logger, client, dbFile, bucket, prefixBase)
 		if err != nil {
@@ -339,21 +348,22 @@ func fileHasChangedBatch(db *DB, root string, path string, batch string) (bool, 
 	return batch != fi.Batch, nil
 }
 
-func doesFileNeedBackup(db *DB, path string, info fs.FileInfo) (bool, backupReason, error) {
+func doesFileNeedBackup(db *DB, path string, info fs.FileInfo) (bool, backupOp, backupReason, error) {
 	fi, err := db.GetFileInfo(path)
 	if err != nil && err != sql.ErrNoRows {
-		return false, backupReasonNone, err
+		return false, backupOpNone, backupReasonNone, err
 	}
 
 	if err == sql.ErrNoRows {
-		return true, backupReasonAdded, nil
+		return true, backupOpAdd, backupReasonNew, nil
 	}
 
-	modTimeChanged := !info.ModTime().Truncate(time.Millisecond).Equal(fi.ModTime.Truncate(time.Millisecond))
+	// As far as I can tell, modtimes are only guaranteed to be equal to the second.
+	modTimeChanged := !info.ModTime().Truncate(time.Second).Equal(fi.ModTime.Truncate(time.Second))
 
 	hash, err := getFileHash(path)
 	if err != nil {
-		return false, backupReasonNone, err
+		return false, backupOpNone, backupReasonNone, err
 	}
 	hashChanged := hash != fi.Hash
 
@@ -363,9 +373,15 @@ func doesFileNeedBackup(db *DB, path string, info fs.FileInfo) (bool, backupReas
 	// Otherwise default to uploading the file, because we'd rather send some duplicative data than
 	// not back up a file.
 	if !modTimeChanged && !hashChanged {
-		return false, backupReasonNone, nil
+		return false, backupOpNone, backupReasonNone, nil
 	}
-	return true, backupReasonChanged, nil
+
+	// If the hash changed, we know the modtime probably also changed, so output hash as the reason.
+	if hashChanged {
+		return true, backupOpChange, backupReasonHash, nil
+	}
+	log.Printf("file %q has changed modtime: %v -> %v", path, fi.ModTime, info.ModTime())
+	return true, backupOpChange, backupReasonModtime, nil
 }
 
 type QueueItem struct {
@@ -468,7 +484,7 @@ func getFilesToBackup(
 			if err != nil {
 				log.Fatal(err)
 			}
-			isDirty, reason, err := doesFileNeedBackup(db, path, info)
+			isDirty, op, reason, err := doesFileNeedBackup(db, path, info)
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -477,13 +493,13 @@ func getFilesToBackup(
 			if err != nil {
 				log.Fatal(err)
 			}
-			summary.AddFile(path, reason)
+			summary.AddFile(path, op)
 			dirFiles = append(dirFiles, &BackupFile{
 				Path:     relPath,
 				FileSize: info.Size(),
 				IsDirty:  isDirty,
 			})
-			logger.Verbosef("  found file %q", path)
+			logger.Verbosef("  found file %q (dirty op: %d, reason: %d)", path, op, reason)
 		}
 	}
 

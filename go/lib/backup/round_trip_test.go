@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"local/backup/lib/logging"
 	"local/backup/lib/util"
@@ -316,9 +317,7 @@ func createTestFile(filename string, size int) error {
 
 const chunkSize = 64000
 
-func compareFiles(file1, file2 string) bool {
-	// Check file size ...
-
+func compareFiles(file1, file2 string) error {
 	f1, err := os.Open(file1)
 	if err != nil {
 		log.Fatal(err)
@@ -331,6 +330,20 @@ func compareFiles(file1, file2 string) bool {
 	}
 	defer f2.Close()
 
+	// Check that the files' modtimes match
+	info1, err := f1.Stat()
+	if err != nil {
+		log.Fatal(err)
+	}
+	info2, err := f2.Stat()
+	if err != nil {
+		log.Fatal(err)
+	}
+	// As far as I can tell, modtimes are only guaranteed to be equal to the second.
+	if !info1.ModTime().Truncate(time.Second).Equal(info2.ModTime().Truncate(time.Second)) {
+		return fmt.Errorf("files have different modtimes: %v != %v", info1.ModTime(), info2.ModTime())
+	}
+
 	for {
 		b1 := make([]byte, chunkSize)
 		_, err1 := f1.Read(b1)
@@ -340,16 +353,16 @@ func compareFiles(file1, file2 string) bool {
 
 		if err1 != nil || err2 != nil {
 			if err1 == io.EOF && err2 == io.EOF {
-				return true
+				return nil
 			} else if err1 == io.EOF || err2 == io.EOF {
-				return false
+				return fmt.Errorf("file contents are not equal")
 			} else {
 				log.Fatal(err1, err2)
 			}
 		}
 
 		if !bytes.Equal(b1, b2) {
-			return false
+			return fmt.Errorf("file contents are not equal")
 		}
 	}
 }
@@ -400,9 +413,9 @@ func compareDirectories(baseDir string, recoveryDir string, t *testing.T) {
 			return err
 		}
 		delete(unexpectedFiles, relativePath)
-		if !compareFiles(path, filepath.Join(recoveryDir, relativePath)) {
-			t.Errorf("files are not equal: %q", relativePath)
-			return fmt.Errorf("files are not equal: %q", relativePath)
+		if err := compareFiles(path, filepath.Join(recoveryDir, relativePath)); err != nil {
+			t.Errorf("files are not equal at path %q: %v", relativePath, err)
+			return fmt.Errorf("files are not equal at path %q: %v", relativePath, err)
 		}
 		return nil
 	})
@@ -515,7 +528,6 @@ func roundTripTest(testConfig *roundTripTestConfig, t *testing.T) {
 		Level: logging.Debug,
 	}
 
-	// a and b but not c will be tarred/gzipped
 	must(BackupFiles(
 		logger,
 		cfg,
@@ -525,9 +537,18 @@ func roundTripTest(testConfig *roundTripTestConfig, t *testing.T) {
 		testConfig.S3Prefix,
 		testConfig.BackupName,
 		testConfig.SizeThreshold,
-		false,
+		BackupOptions{},
 	))
-	must(RecoverFiles(logger, cfg, testConfig.DBFile, bucket, testConfig.S3Prefix, testConfig.BackupName, testRecoveryDir))
+	must(RecoverFiles(
+		logger,
+		cfg,
+		testConfig.DBFile,
+		bucket,
+		testConfig.S3Prefix,
+		testConfig.BackupName,
+		testRecoveryDir,
+		RecoveryOptions{},
+	))
 
 	compareDirectories(testBaseDir, testRecoveryDir, t)
 

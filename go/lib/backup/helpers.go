@@ -56,6 +56,38 @@ func backupFile(logger logging.Logger, client *s3.Client, bucket string, prefix 
 	return nil
 }
 
+// XXX: this doesn't work yet
+func backupFileWithArchive(
+	logger logging.Logger,
+	client *s3.Client,
+	bucket string,
+	prefix string,
+	localRoot string,
+	// This should be relative to the root
+	localBatchRoot string,
+	localPath string,
+) error {
+	archiveName := localPath + ".tar.gz"
+	archiveName = filepath.Base(archiveName)
+
+	logger.Verbosef(
+		"backing up file %q to %q",
+		localPath,
+		filepath.Join(localBatchRoot, archiveName),
+	)
+
+	return backupFilesToArchive(
+		logger,
+		client,
+		archiveName,
+		bucket,
+		prefix,
+		localRoot,
+		localBatchRoot,
+		[]string{localPath},
+	)
+}
+
 // Mostly from https://www.arthurkoziel.com/writing-tar-gz-files-in-go/
 func backupDirectory(
 	logger logging.Logger,
@@ -67,7 +99,30 @@ func backupDirectory(
 	localBatchRoot string,
 	files []string,
 ) error {
-	key := filepath.Join(prefix, localBatchRoot, "_files.tar.gz")
+	return backupFilesToArchive(
+		logger,
+		client,
+		"_files.tar.gz",
+		bucket,
+		prefix,
+		localRoot,
+		localBatchRoot,
+		files,
+	)
+}
+
+func backupFilesToArchive(
+	logger logging.Logger,
+	client *s3.Client,
+	archiveName string,
+	bucket string,
+	prefix string,
+	localRoot string,
+	// This should be relative to the root
+	localBatchRoot string,
+	files []string,
+) error {
+	key := filepath.Join(prefix, localBatchRoot, archiveName)
 	logger.Verbosef("backing up directory %q -> %q", localBatchRoot, key)
 
 	// Create a buffer to write the files into
@@ -140,6 +195,9 @@ func addFileToArchive(tw *tar.Writer, baseDir string, filename string) error {
 		return err
 	}
 	header.Name = relativePath
+
+	// Update the header's format to preserve sub-second modtime resolution (see https://pkg.go.dev/archive/tar#Format)
+	header.Format = tar.FormatPAX
 
 	// Write file header to the tar archive
 	err = tw.WriteHeader(header)

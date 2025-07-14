@@ -5,13 +5,22 @@ import (
 	"local/backup/lib/logging"
 )
 
+type backupOp int
+
+const (
+	backupOpNone backupOp = iota
+	backupOpAdd
+	backupOpChange
+	backupOpRemove
+)
+
 type backupReason int
 
 const (
 	backupReasonNone backupReason = iota
-	backupReasonAdded
-	backupReasonChanged
-	backupReasonRemoved
+	backupReasonNew
+	backupReasonModtime
+	backupReasonHash
 )
 
 type backupSummary struct {
@@ -20,18 +29,18 @@ type backupSummary struct {
 	FilesRemoved []string
 }
 
-func (s *backupSummary) AddFile(path string, reason backupReason) {
-	switch reason {
-	case backupReasonAdded:
+func (s *backupSummary) AddFile(path string, op backupOp) {
+	switch op {
+	case backupOpAdd:
 		s.FilesAdded = append(s.FilesAdded, path)
-	case backupReasonChanged:
+	case backupOpChange:
 		s.FilesChanged = append(s.FilesChanged, path)
-	case backupReasonRemoved:
+	case backupOpRemove:
 		s.FilesRemoved = append(s.FilesRemoved, path)
-	case backupReasonNone:
+	case backupOpNone:
 		// Do nothing
 	default:
-		panic(fmt.Sprintf("unknown backup reason: %d", reason))
+		panic(fmt.Sprintf("unknown backup op: %d", op))
 	}
 }
 

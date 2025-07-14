@@ -36,7 +36,7 @@ func TestCompareDB(t *testing.T) {
 		testConfig.S3Prefix,
 		testConfig.BackupName,
 		testConfig.SizeThreshold,
-		false,
+		BackupOptions{},
 	))
 
 	testCases := []struct {
