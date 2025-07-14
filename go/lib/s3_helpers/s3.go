@@ -2,13 +2,17 @@ package s3_helpers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
+
+var ErrNotFound = errors.New("not found")
 
 func UploadFile(client *s3.Client, bucket string, key string, localPath string) error {
 	localFile, err := os.Open(localPath)
@@ -34,6 +38,10 @@ func DownloadFile(client *s3.Client, bucket string, key string, localPath string
 		Key:    &key,
 	})
 	if err != nil {
+		var notfound *types.NoSuchKey
+		if errors.As(err, &notfound) {
+			return ErrNotFound
+		}
 		return fmt.Errorf("failed to download file %q: %s", key, err)
 	}
 

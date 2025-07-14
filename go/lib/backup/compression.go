@@ -10,16 +10,16 @@ import (
 	"strings"
 )
 
-func decompressFile(sourcePath string, destinationDir string) error {
+func decompressFile(sourcePath string, destinationDir string) (string, error) {
 	archiveFile, err := os.Open(sourcePath)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer archiveFile.Close()
 
 	gzr, err := gzip.NewReader(archiveFile)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer gzr.Close()
 
@@ -27,16 +27,16 @@ func decompressFile(sourcePath string, destinationDir string) error {
 	destinationFilename = strings.TrimSuffix(destinationFilename, ".gz")
 	destinationFile, err := os.Create(destinationFilename)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer destinationFile.Close()
 
 	_, err = io.Copy(destinationFile, gzr)
 	if err != nil {
-		return err
+		return "", err
 	}
 
-	return nil
+	return destinationFilename, nil
 }
 
 // Mostly from https://medium.com/@skdomino/taring-untaring-files-in-go-6b07cf56bc07

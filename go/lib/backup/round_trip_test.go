@@ -1,4 +1,4 @@
-package test
+package backup
 
 import (
 	"bytes"
@@ -13,7 +13,6 @@ import (
 	"strings"
 	"testing"
 
-	"local/backup/lib/backup"
 	"local/backup/lib/logging"
 	"local/backup/lib/util"
 
@@ -453,6 +452,7 @@ const (
 )
 
 type roundTripTestConfig struct {
+	Bucket        string
 	BackupName    string
 	TestBaseDir   string
 	DBFile        string
@@ -477,6 +477,7 @@ func getDefaultTestConfig() *roundTripTestConfig {
 	dbFile := filepath.Join(testDBDir, fmt.Sprintf("%s.db", backupName))
 
 	return &roundTripTestConfig{
+		Bucket:        bucket,
 		BackupName:    backupName,
 		TestBaseDir:   testBaseDir,
 		DBFile:        dbFile,
@@ -484,7 +485,7 @@ func getDefaultTestConfig() *roundTripTestConfig {
 		S3Prefix:      myPrefix,
 		FullS3Prefix:  filepath.Join(myPrefix, backupName),
 		Cleanup: func() {
-			cfg := backup.GetMinioConfig(minioUrl)
+			cfg := GetMinioConfig(minioUrl)
 			client := s3.NewFromConfig(*cfg)
 			must(clearBucket(client, bucket, myPrefix))
 
@@ -503,7 +504,7 @@ func roundTripTest(testConfig *roundTripTestConfig, t *testing.T) {
 		must(os.RemoveAll(testRecoveryDir))
 	})()
 
-	cfg := backup.GetMinioConfig(minioUrl)
+	cfg := GetMinioConfig(minioUrl)
 	client := s3.NewFromConfig(*cfg)
 
 	if !testConfig.LeaveBucketContents {
@@ -515,7 +516,7 @@ func roundTripTest(testConfig *roundTripTestConfig, t *testing.T) {
 	}
 
 	// a and b but not c will be tarred/gzipped
-	must(backup.BackupFiles(
+	must(BackupFiles(
 		logger,
 		cfg,
 		testConfig.DBFile,
@@ -526,12 +527,12 @@ func roundTripTest(testConfig *roundTripTestConfig, t *testing.T) {
 		testConfig.SizeThreshold,
 		false,
 	))
-	must(backup.RecoverFiles(logger, cfg, bucket, testConfig.S3Prefix, testConfig.BackupName, testRecoveryDir))
+	must(RecoverFiles(logger, cfg, bucket, testConfig.S3Prefix, testConfig.BackupName, testRecoveryDir))
 
 	compareDirectories(testBaseDir, testRecoveryDir, t)
 
 	// Read the backup db and find all of the S3 keys that should exist.
-	db, err := backup.NewDB(testConfig.DBFile)
+	db, err := NewDB(testConfig.DBFile)
 	must(err)
 	defer db.Close()
 
@@ -615,7 +616,7 @@ func roundTripTest(testConfig *roundTripTestConfig, t *testing.T) {
 
 func assertBatchCount(t *testing.T, dbFile string, s3Prefix string, expected int) {
 	// Check the batch count in the DB
-	db, err := backup.NewDB(dbFile)
+	db, err := NewDB(dbFile)
 	must(err)
 	batchesInDb, err := db.GetExistingBatches(true)
 	must(err)
@@ -624,7 +625,7 @@ func assertBatchCount(t *testing.T, dbFile string, s3Prefix string, expected int
 	}
 
 	// Check the batch count in S3
-	cfg := backup.GetMinioConfig(minioUrl)
+	cfg := GetMinioConfig(minioUrl)
 	client := s3.NewFromConfig(*cfg)
 	output, err := client.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
 		Bucket: aws.String(bucket),

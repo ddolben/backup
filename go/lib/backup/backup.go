@@ -51,6 +51,17 @@ func BackupFiles(
 	// Clean up the root path, since it was user input (e.g. resolve '..' elements).
 	cleanRoot := filepath.Clean(localRoot)
 
+	// Download the backup db from S3 and check if any files have changed since the last time we did a
+	// backup.
+	changes, err := downloadAndCompareDB(logger, client, dbFile, bucket, prefixBase, name)
+	if err != nil {
+		log.Fatalf("error downloading and comparing db: %v", err)
+	}
+	if len(changes) > 0 {
+		logger.Infof("files have changed in storage since the last backup, aborting: %+v", changes)
+		return fmt.Errorf("files have changed in storage since the last backup")
+	}
+
 	summary := &backupSummary{}
 
 	// Scan through all the files in the directory and arrange them into batches.
@@ -130,13 +141,15 @@ func BackupFiles(
 	logger.Verbosef("<< Backing up batches")
 	logger.Verbosef("< Backing up files")
 
-	logger.Verbosef("> Backing up db")
 	// Back up the DB file to the S3 prefix
-	err = backupDB(logger, client, dbFile, bucket, prefixBase)
-	if err != nil {
-		log.Fatalf("error backing up db: %+v", err)
+	if !dryRun {
+		logger.Verbosef("> Backing up db")
+		err = backupDB(logger, client, dbFile, bucket, prefixBase)
+		if err != nil {
+			log.Fatalf("error backing up db: %+v", err)
+		}
+		logger.Verbosef("< Backing up db")
 	}
-	logger.Verbosef("< Backing up db")
 
 	return nil
 }
@@ -625,8 +638,8 @@ func getFilesNotInBatches(db *DB, batches []*BackupBatch) ([]string, error) {
 	// Find all files in the db that are not in the backup plan
 	var filesNotInBatches []string
 	for _, file := range dbFiles {
-		if _, ok := filesInBatches[file]; !ok {
-			filesNotInBatches = append(filesNotInBatches, file)
+		if _, ok := filesInBatches[file.Path]; !ok {
+			filesNotInBatches = append(filesNotInBatches, file.Path)
 		}
 	}
 	return filesNotInBatches, nil

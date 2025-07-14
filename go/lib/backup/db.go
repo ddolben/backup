@@ -13,6 +13,7 @@ import (
 )
 
 type FileInfo struct {
+	Path    string
 	ModTime time.Time
 	Hash    string
 	Batch   string
@@ -44,7 +45,7 @@ func initDB(db *sql.DB) error {
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS files (
 			path text,
-			mod_time timestamptz,
+			mod_time bigint,
 			hash text,
 			-- The batch that this file belongs to
 			batch text,
@@ -75,34 +76,44 @@ func (db *DB) DumpDB() error {
 	for rows.Next() {
 		var path string
 		var batch string
-		var ts string
+		var modTimeMS int64
 		var hash string
-		if err := rows.Scan(&path, &batch, &ts, &hash); err != nil {
+		if err := rows.Scan(&path, &batch, &modTimeMS, &hash); err != nil {
 			return err
 		}
-		modTime, err := time.Parse("2006-01-02 15:04:05.000", ts)
-		if err != nil {
-			return err
-		}
-		log.Printf("  %v %v %v %v", path, batch, modTime, hash)
+		log.Printf("  %v %v %v %v", path, batch, time.UnixMilli(modTimeMS), hash)
 	}
 	return nil
 }
 
-func (db *DB) GetAllFiles() ([]string, error) {
-	rows, err := db.db.Query("SELECT path FROM files")
+func (db *DB) GetAllFiles() ([]*FileInfo, error) {
+	rows, err := db.db.Query(`
+		SELECT
+			path,
+			mod_time,
+			hash,
+			batch
+		FROM files`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var files []string
+	var files []*FileInfo
 	for rows.Next() {
 		var path string
-		if err := rows.Scan(&path); err != nil {
+		var modTimeMS int64
+		var hash string
+		var batch string
+		if err := rows.Scan(&path, &modTimeMS, &hash, &batch); err != nil {
 			return nil, err
 		}
-		files = append(files, path)
+		files = append(files, &FileInfo{
+			Path:    path,
+			ModTime: time.UnixMilli(modTimeMS),
+			Hash:    hash,
+			Batch:   batch,
+		})
 	}
 	return files, nil
 }
@@ -112,16 +123,15 @@ func (db *DB) GetFileInfo(path string) (*FileInfo, error) {
 	if row.Err() != nil {
 		return nil, row.Err()
 	}
-	fileInfo := &FileInfo{}
-	var ts string
-	err := row.Scan(&ts, &fileInfo.Hash, &fileInfo.Batch)
+	fileInfo := &FileInfo{
+		Path: path,
+	}
+	var modTimeMS int64
+	err := row.Scan(&modTimeMS, &fileInfo.Hash, &fileInfo.Batch)
 	if err != nil {
 		return nil, err
 	}
-	fileInfo.ModTime, err = time.Parse("2006-01-02 15:04:05.000", ts)
-	if err != nil {
-		return nil, err
-	}
+	fileInfo.ModTime = time.UnixMilli(modTimeMS)
 	return fileInfo, nil
 }
 
@@ -136,7 +146,7 @@ func (db *DB) MarkFile(path string, modTime time.Time, hash string, batch string
 			mod_time = excluded.mod_time,
 			hash = excluded.hash,
 			batch = excluded.batch
-	`, path, modTime.UTC().Format("2006-01-02 15:04:05.000"), hash, batch)
+	`, path, modTime.UnixMilli(), hash, batch)
 	return err
 }
 
@@ -165,6 +175,14 @@ func (db *DB) DeleteBatch(batch string) error {
 		DELETE FROM files
 		WHERE batch = ?
 	`, batch)
+	return err
+}
+
+func (db *DB) DeleteFile(path string) error {
+	_, err := db.db.Exec(`
+		DELETE FROM files
+		WHERE path = ?
+	`, path)
 	return err
 }
 
