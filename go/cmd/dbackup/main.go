@@ -15,7 +15,7 @@ import (
 )
 
 func main() {
-	fMetaDb := flag.String("db", "", "database location for local cache storage (if not provided, will be stored in ~/.dbackup/)")
+	fMetaDbDir := flag.String("db", "", "database directory for local cache storage (if not provided, will be stored in ~/.dbackup/)")
 	fBackupName := flag.String("name", "", "name of the backup (if not provided, will be derived from the root directory)")
 	fRootDir := flag.String("dir", ".", "root directory for backup operation")
 	fSizeThreshold := flag.Int64("size_threshold", 1024*1024, "defines the threshold above which a file gets backed up by itself, as well as the max size of a directory to get zipped together")
@@ -62,15 +62,16 @@ func main() {
 
 	bucket := *fBucket
 
-	dbFile := *fMetaDb
-	if dbFile == "" {
+	dbDir := *fMetaDbDir
+	if dbDir == "" {
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
 			log.Fatal(err)
 		}
-
-		dbFile = filepath.Join(homeDir, ".dbackup", fmt.Sprintf("%s.db", backupName))
+		dbDir = filepath.Join(homeDir, ".dbackup")
 	}
+
+	dbFile := filepath.Join(dbDir, fmt.Sprintf("%s.db", backupName))
 	absDbFile, err := filepath.Abs(dbFile)
 	if err != nil {
 		log.Fatal(err)
