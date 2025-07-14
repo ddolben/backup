@@ -4,3 +4,4 @@
 go-bin/
 test-data/
 test-download/
+dist/
