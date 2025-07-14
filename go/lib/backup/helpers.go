@@ -15,7 +15,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-func backupFile(logger logging.Logger, client *s3.Client, bucket string, prefix string, localRoot string, localPath string) error {
+// XXX: unused right now, since we need the tar archive to preserve modtimes
+func backupFileNoArchive(logger logging.Logger, client *s3.Client, bucket string, prefix string, localRoot string, localPath string) error {
 	key := localPath + ".gz"
 	key = filepath.Join(prefix, key)
 	absolutePath := filepath.Join(localRoot, localPath)
@@ -56,35 +57,34 @@ func backupFile(logger logging.Logger, client *s3.Client, bucket string, prefix 
 	return nil
 }
 
-// XXX: this doesn't work yet
-func backupFileWithArchive(
+func backupFile(
 	logger logging.Logger,
 	client *s3.Client,
 	bucket string,
 	prefix string,
 	localRoot string,
-	// This should be relative to the root
-	localBatchRoot string,
-	localPath string,
+	// Relative to the local root
+	filePath string,
 ) error {
-	archiveName := localPath + ".tar.gz"
-	archiveName = filepath.Base(archiveName)
+	archiveName := filePath + ".tar.gz"
 
 	logger.Verbosef(
 		"backing up file %q to %q",
-		localPath,
-		filepath.Join(localBatchRoot, archiveName),
+		filePath,
+		archiveName,
 	)
 
+	// XXX: this isn't optimal, since it's relatively inefficient to wrap a single file with a tar
+	// archive. For now we need it to preserve modtimes.
 	return backupFilesToArchive(
 		logger,
 		client,
-		archiveName,
 		bucket,
 		prefix,
+		archiveName,
 		localRoot,
-		localBatchRoot,
-		[]string{localPath},
+		filepath.Dir(filePath),
+		[]string{filePath},
 	)
 }
 
@@ -102,9 +102,9 @@ func backupDirectory(
 	return backupFilesToArchive(
 		logger,
 		client,
-		"_files.tar.gz",
 		bucket,
 		prefix,
+		filepath.Join(localBatchRoot, "_files.tar.gz"),
 		localRoot,
 		localBatchRoot,
 		files,
@@ -114,15 +114,17 @@ func backupDirectory(
 func backupFilesToArchive(
 	logger logging.Logger,
 	client *s3.Client,
-	archiveName string,
 	bucket string,
 	prefix string,
+	// S3 key relative to the prefix
+	archiveName string,
+	// Root of the local backup directory
 	localRoot string,
-	// This should be relative to the root
+	// Relative to the local root
 	localBatchRoot string,
 	files []string,
 ) error {
-	key := filepath.Join(prefix, localBatchRoot, archiveName)
+	key := filepath.Join(prefix, archiveName)
 	logger.Verbosef("backing up directory %q -> %q", localBatchRoot, key)
 
 	// Create a buffer to write the files into

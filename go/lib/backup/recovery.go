@@ -63,9 +63,13 @@ func RecoverFiles(
 	logger.Verbosef("> Recovering files from %s", keyPrefix)
 
 	// Download the backup db from S3 so we can compare it to the remote DB next time we do a recovery.
-	_, err = downloadDB(logger, client, bucket, prefixBase, name, filepath.Dir(dbFile))
+	remoteDBFile, err := downloadDB(logger, client, bucket, prefixBase, name, filepath.Dir(dbFile))
 	if err != nil {
 		return fmt.Errorf("failed to download remote db file: %v", err)
+	}
+	if remoteDBFile != dbFile {
+		logger.Verbosef("renaming remote db file %q to %q", remoteDBFile, dbFile)
+		os.Rename(remoteDBFile, dbFile)
 	}
 	logger.Verbosef("downloaded remote db file to %q", dbFile)
 
@@ -101,7 +105,8 @@ func RecoverFiles(
 			os.Remove(localPath)
 		} else {
 			log.Printf("extracting single file %q", localPath)
-			_, err := decompressFile(localPath, filepath.Dir(localPath))
+			//_, err := decompressFile(localPath, filepath.Dir(localPath))
+			err := unTar(localPath, filepath.Dir(localPath))
 			if err != nil {
 				log.Fatalf("failed to decompress file %q: %v", localPath, err)
 			}

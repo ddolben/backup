@@ -12,6 +12,16 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
+func backupDB(logger logging.Logger, client *s3.Client, dbFile string, bucket string, prefix string) error {
+	dir := filepath.Dir(dbFile)
+	file := filepath.Base(dbFile)
+
+	// Explicitly don't use the archive, since changing the modtime of an SQLite database is
+	// potentially dangerous.
+	return backupFileNoArchive(logger, client, bucket, prefix, dir, file)
+	//return backupFile(logger, client, bucket, prefix, dir, file)
+}
+
 func downloadAndCompareDB(
 	logger logging.Logger,
 	client *s3.Client,
@@ -35,6 +45,8 @@ func downloadAndCompareDB(
 	}
 	defer os.Remove(remoteDBFile)
 	logger.Verbosef("downloaded remote db file to %q", remoteDBFile)
+
+	logger.Verbosef("comparing db file %q with remote db file %q", dbFile, remoteDBFile)
 
 	localDb, err := NewDB(dbFile)
 	if err != nil {
@@ -129,6 +141,12 @@ func downloadDB(
 	if err != nil {
 		return "", fmt.Errorf("failed to decompress db file: %v", err)
 	}
+
+	//err = unTar(remoteDBFileCompressed, localDir)
+	//if err != nil {
+	//	return "", fmt.Errorf("failed to untar db file: %v", err)
+	//}
+	//remoteDBFile := strings.TrimSuffix(remoteDBFileCompressed, ".tar.gz")
 
 	return remoteDBFile, nil
 }

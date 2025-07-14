@@ -164,12 +164,6 @@ func BackupFiles(
 	return nil
 }
 
-func backupDB(logger logging.Logger, client *s3.Client, dbFile string, bucket string, prefix string) error {
-	dir := filepath.Dir(dbFile)
-	file := filepath.Base(dbFile)
-	return backupFile(logger, client, bucket, prefix, dir, file)
-}
-
 func backupBatch(
 	logger logging.Logger,
 	db *DB,
@@ -197,7 +191,7 @@ func backupBatch(
 				return fmt.Errorf("failed to check if file has changed batch %q: %v", file.Path, err)
 			}
 			if changed {
-				logger.Debugf("file %q has changed batches", file)
+				logger.Debugf("file %q has changed batches", file.Path)
 				anyDirty = true
 			}
 		}
@@ -258,7 +252,7 @@ func deleteBatch(
 ) error {
 	keyPath := filepath.Join(prefix, batch.Path)
 	if batch.IsSingleFile {
-		keyPath = keyPath + ".gz"
+		keyPath = keyPath + ".tar.gz"
 	} else {
 		// If it's a directory, delete the archive
 		keyPath = filepath.Join(keyPath, "_files.tar.gz")

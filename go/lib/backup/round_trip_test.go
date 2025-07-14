@@ -26,7 +26,7 @@ const minioUrl = "http://localhost:9000"
 
 var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
-func TestRoundTrip_Basic(t *testing.T) {
+func TestRoundTrip_Basic_SingleFileBatches(t *testing.T) {
 	config := getDefaultTestConfig()
 	defer config.Cleanup()
 	testBaseDir := config.TestBaseDir
@@ -35,6 +35,19 @@ func TestRoundTrip_Basic(t *testing.T) {
 	must(createTestFile(filepath.Join(testBaseDir, "b.txt"), 9))
 	must(createTestFile(filepath.Join(testBaseDir, "c.txt"), 25))
 
+	roundTripTest(config, t)
+}
+
+func TestRoundTrip_Basic_MultiFileBatch(t *testing.T) {
+	config := getDefaultTestConfig()
+	defer config.Cleanup()
+	testBaseDir := config.TestBaseDir
+
+	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "b.txt"), 9))
+	must(createTestFile(filepath.Join(testBaseDir, "c.txt"), 25))
+
+	config.SizeThreshold = 100000
 	roundTripTest(config, t)
 }
 
@@ -609,7 +622,7 @@ func roundTripTest(testConfig *roundTripTestConfig, t *testing.T) {
 	for _, batch := range batchesInDb {
 		var batchKey string
 		if batch.IsSingleFile {
-			batchKey = fmt.Sprintf("%s/%s.gz", testConfig.FullS3Prefix, batch.Path)
+			batchKey = fmt.Sprintf("%s/%s.tar.gz", testConfig.FullS3Prefix, batch.Path)
 		} else {
 			if batch.Path == "." {
 				batchKey = fmt.Sprintf("%s/_files.tar.gz", testConfig.FullS3Prefix)
