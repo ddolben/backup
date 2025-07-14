@@ -527,7 +527,7 @@ func roundTripTest(testConfig *roundTripTestConfig, t *testing.T) {
 		testConfig.SizeThreshold,
 		false,
 	))
-	must(RecoverFiles(logger, cfg, bucket, testConfig.S3Prefix, testConfig.BackupName, testRecoveryDir))
+	must(RecoverFiles(logger, cfg, testConfig.DBFile, bucket, testConfig.S3Prefix, testConfig.BackupName, testRecoveryDir))
 
 	compareDirectories(testBaseDir, testRecoveryDir, t)
 

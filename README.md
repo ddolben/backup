@@ -18,5 +18,5 @@ before running tests. The script to run the dev docker will attach to the same n
 
 ## To Do
 
-- Upload the DB to storage, and check before upload/recovery whether the DB has changed since last upload
+- Figure out why all files from a recovered backup show up as changed on the next run (not preserving modtimes?)
 - Config file vs. DB args (spf13/viper?)

@@ -58,7 +58,8 @@ func BackupFiles(
 		log.Fatalf("error downloading and comparing db: %v", err)
 	}
 	if len(changes) > 0 {
-		logger.Infof("files have changed in storage since the last backup, aborting: %+v", changes)
+		logger.Infof("files have changed in storage since the last backup, aborting:")
+		printChanges(changes)
 		return fmt.Errorf("files have changed in storage since the last backup")
 	}
 

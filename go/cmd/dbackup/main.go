@@ -70,10 +70,15 @@ func main() {
 
 		dbFile = filepath.Join(homeDir, ".dbackup", fmt.Sprintf("%s.db", backupName))
 	}
+	absDbFile, err := filepath.Abs(dbFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+	dbFile = filepath.Clean(absDbFile)
 	logger.Infof("using db file: %s", dbFile)
 
 	if *fDoRecover {
-		err := backup.RecoverFiles(logger, cfg, bucket, *fPrefix, backupName, *fRootDir)
+		err := backup.RecoverFiles(logger, cfg, dbFile, bucket, *fPrefix, backupName, *fRootDir)
 		if err != nil {
 			log.Fatalf("error recovering files: %+v", err)
 		}

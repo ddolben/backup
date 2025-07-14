@@ -20,7 +20,12 @@ func downloadAndCompareDB(
 	prefixBase string,
 	backupName string,
 ) ([]string, error) {
-	remoteDBFileCompressed, err := downloadDB(client, bucket, prefixBase, backupName)
+	// Check if the local db exists. If not, then we're doing a fresh backup or recovery.
+	if _, err := os.Stat(dbFile); os.IsNotExist(err) {
+		return nil, nil
+	}
+
+	remoteDBFile, err := downloadDB(logger, client, bucket, prefixBase, backupName, os.TempDir())
 	if err != nil {
 		if errors.Is(err, s3_helpers.ErrNotFound) {
 			// This just means the backup doesn't exist yet.
@@ -28,14 +33,8 @@ func downloadAndCompareDB(
 		}
 		return nil, err
 	}
-	defer os.Remove(remoteDBFileCompressed)
-
-	// Decompress the remote db file.
-	remoteDBFile, err := decompressFile(remoteDBFileCompressed, os.TempDir())
-	if err != nil {
-		return nil, fmt.Errorf("failed to decompress db file: %v", err)
-	}
 	defer os.Remove(remoteDBFile)
+	logger.Verbosef("downloaded remote db file to %q", remoteDBFile)
 
 	localDb, err := NewDB(dbFile)
 	if err != nil {
@@ -108,16 +107,34 @@ func downloadAndCompareDB(
 }
 
 func downloadDB(
+	logger logging.Logger,
 	client *s3.Client,
 	bucket string,
 	prefixBase string,
 	backupName string,
+	localDir string,
 ) (string, error) {
+	// Download the remote DB file.
 	remoteDBKey := filepath.Join(prefixBase, fmt.Sprintf("%s.db.gz", backupName))
-	remoteDBFile := filepath.Join(os.TempDir(), fmt.Sprintf("%s.db.gz", backupName))
-	err := s3_helpers.DownloadFile(client, bucket, remoteDBKey, remoteDBFile)
+	remoteDBFileCompressed := filepath.Join(localDir, fmt.Sprintf("%s.db.gz", backupName))
+	logger.Verbosef("downloading db from %q to %q", remoteDBKey, remoteDBFileCompressed)
+	err := s3_helpers.DownloadFile(client, bucket, remoteDBKey, remoteDBFileCompressed)
 	if err != nil {
 		return "", err
 	}
+	defer os.Remove(remoteDBFileCompressed)
+
+	// Decompress the remote db file.
+	remoteDBFile, err := decompressFile(remoteDBFileCompressed, localDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to decompress db file: %v", err)
+	}
+
 	return remoteDBFile, nil
+}
+
+func printChanges(changes []string) {
+	for _, change := range changes {
+		fmt.Println(change)
+	}
 }
