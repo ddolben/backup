@@ -18,5 +18,5 @@ before running tests. The script to run the dev docker will attach to the same n
 
 ## To Do
 
-- Figure out why all files from a recovered backup show up as changed on the next run (not preserving modtimes?)
+- Should recovery delete files _not_ present in the backup?
 - Config file vs. DB args (spf13/viper?)
