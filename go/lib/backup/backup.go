@@ -202,10 +202,10 @@ func backupBatch(
 	}
 
 	if dryRun {
-		files := util.Map(batch.Files, func(f *BackupFile) string {
-			return f.Path
-		})
-		logger.Infof("dry run, would have backed up batch %q, files: %+v", batch.Root, files)
+		logger.Infof("dry run, would have backed up batch %q, files:", batch.Root)
+		for _, file := range batch.Files {
+			logger.Infof("  %s", file.Path)
+		}
 		return nil
 	}
 
