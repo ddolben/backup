@@ -30,6 +30,34 @@ func TestIgnoreFile(t *testing.T) {
 	assert.True(t, ignoreFile.IsIgnored(".dbignore"))
 }
 
+// TestIgnoreFile_EmptyLines makes sure that blank lines (e.g. from a trailing newline or a blank
+// separator line) are skipped rather than compiled into an empty regex, which would match every
+// path and silently exclude the entire backup.
+func TestIgnoreFile_EmptyLines(t *testing.T) {
+	// Includes a leading blank line, a whitespace-only line, and a trailing newline.
+	contents := "\n-ignore.txt$\n   \nsubdir-to-ignore/\n"
+	ignoreFile, err := LoadIgnoreFileFromString(contents)
+	if err != nil {
+		t.Fatalf("error loading ignore file: %v", err)
+	}
+
+	// Non-matching files must NOT be ignored (they would be if a blank line compiled to a match-all
+	// regex).
+	assert.False(t, ignoreFile.IsIgnored("a.txt"))
+	assert.False(t, ignoreFile.IsIgnored("subdir/a.txt"))
+
+	// The real patterns still work.
+	assert.True(t, ignoreFile.IsIgnored("a-ignore.txt"))
+	assert.True(t, ignoreFile.IsIgnored("subdir-to-ignore/a.txt"))
+}
+
+// TestIgnoreFile_InvalidPattern makes sure a malformed pattern surfaces as an error instead of
+// panicking.
+func TestIgnoreFile_InvalidPattern(t *testing.T) {
+	_, err := LoadIgnoreFileFromString("[unclosed")
+	assert.Error(t, err)
+}
+
 func TestRoundTrip_IgnoreFile(t *testing.T) {
 	config := getDefaultTestConfig()
 	defer config.Cleanup()
