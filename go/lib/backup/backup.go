@@ -103,8 +103,9 @@ func BackupFiles(
 	for _, file := range deletedFiles {
 		summary.AddFile(file, backupOpRemove)
 	}
-	// Print the summary
-	summary.Print(logger)
+	// Print the summary. On a dry run also print the ignored files, since the point of a dry run is to
+	// preview exactly what will (and won't) be backed up.
+	summary.Print(logger, options.DryRun)
 
 	// Log the batches for debugging
 	logger.Verbosef("> Found files")
@@ -472,6 +473,7 @@ func getFilesToBackup(
 
 		if ignoreFile.IsIgnored(path) {
 			logger.Verbosef("ignoring path %q", path)
+			summary.AddIgnored(path)
 			continue
 		}
 

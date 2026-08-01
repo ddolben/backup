@@ -27,6 +27,11 @@ type backupSummary struct {
 	FilesAdded   []string
 	FilesChanged []string
 	FilesRemoved []string
+	FilesIgnored []string
+}
+
+func (s *backupSummary) AddIgnored(path string) {
+	s.FilesIgnored = append(s.FilesIgnored, path)
 }
 
 func (s *backupSummary) AddFile(path string, op backupOp) {
@@ -44,7 +49,7 @@ func (s *backupSummary) AddFile(path string, op backupOp) {
 	}
 }
 
-func (s *backupSummary) Print(logger logging.Logger) {
+func (s *backupSummary) Print(logger logging.Logger, printIgnored bool) {
 	if len(s.FilesAdded) > 0 {
 		logger.Infof("Files added:")
 		for _, file := range s.FilesAdded {
@@ -68,5 +73,16 @@ func (s *backupSummary) Print(logger logging.Logger) {
 		}
 	} else {
 		logger.Infof("No files removed")
+	}
+
+	if printIgnored {
+		if len(s.FilesIgnored) > 0 {
+			logger.Infof("Files ignored (per .dbignore):")
+			for _, file := range s.FilesIgnored {
+				logger.Infof("  %s", file)
+			}
+		} else {
+			logger.Infof("No files ignored")
+		}
 	}
 }
