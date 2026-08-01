@@ -109,7 +109,7 @@ func compareFiles(file1, file2 string) error {
 	}
 }
 
-func compareDirectories(baseDir string, recoveryDir string, t *testing.T) {
+func compareDirectories(baseDir string, recoveryDir string, ignoreFile *IgnoreFile, t *testing.T) {
 	// Track all seen files so we also get a deletion check.
 	unexpectedFiles := make(map[string]struct{})
 	err := filepath.WalkDir(recoveryDir, func(path string, d fs.DirEntry, err error) error {
@@ -147,6 +147,13 @@ func compareDirectories(baseDir string, recoveryDir string, t *testing.T) {
 		if filepath.Base(path) == "backup.db" {
 			// Skip the backup db
 			// TODO: this is janky, what if one of the files to be backed up has this name?
+			return nil
+		}
+
+		// Files matched by the ignore file should not have been backed up, so we don't expect them in
+		// the recovery directory. Skip them here (without recording them as expected) so that if one
+		// _was_ backed up it'll surface as an unexpected file in the recovery directory below.
+		if ignoreFile.IsIgnored(path) {
 			return nil
 		}
 
@@ -217,7 +224,10 @@ type roundTripTestConfig struct {
 	LeaveBucketContents bool
 	S3Prefix            string
 	FullS3Prefix        string
-	Cleanup             func()
+	// If set, files matching this ignore file are expected to be excluded from the backup, so the
+	// round-trip comparison skips them instead of requiring them in the recovery directory.
+	IgnoreFile *IgnoreFile
+	Cleanup    func()
 }
 
 func getDefaultTestConfig() *roundTripTestConfig {
@@ -292,7 +302,7 @@ func roundTripTest(testConfig *roundTripTestConfig, t *testing.T) {
 		RecoveryOptions{},
 	))
 
-	compareDirectories(testBaseDir, testRecoveryDir, t)
+	compareDirectories(testBaseDir, testRecoveryDir, testConfig.IgnoreFile, t)
 
 	// Read the backup db and find all of the S3 keys that should exist.
 	db, err := NewDB(testConfig.DBFile)

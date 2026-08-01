@@ -1,6 +1,8 @@
 package backup
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -28,7 +30,6 @@ func TestIgnoreFile(t *testing.T) {
 	assert.True(t, ignoreFile.IsIgnored(".dbignore"))
 }
 
-/*
 func TestRoundTrip_IgnoreFile(t *testing.T) {
 	config := getDefaultTestConfig()
 	defer config.Cleanup()
@@ -51,8 +52,32 @@ func TestRoundTrip_IgnoreFile(t *testing.T) {
 	must(createTestFile(filepath.Join(testBaseDir, "subdir-2/c-ignore.txt"), 25))
 
 	// Create a .dbignore file in the root
-	must(os.WriteFile(filepath.Join(testBaseDir, ".dbignore"), []byte("-ignore.txt$\nsubdir-2/"), 0644))
+	dbignorePath := filepath.Join(testBaseDir, ".dbignore")
+	must(os.WriteFile(dbignorePath, []byte("-ignore.txt$\nsubdir-2/"), 0644))
+
+	// Load the same ignore file that the backup will use so the round-trip comparison knows which
+	// files are expected to be excluded from the recovery directory.
+	ignoreFile, err := LoadIgnoreFile(dbignorePath)
+	must(err)
+	config.IgnoreFile = ignoreFile
+
+	roundTripTest(config, t)
+
+	// The backup should contain exactly the four files that were _not_ ignored (a.txt, c.txt,
+	// subdir-1/a.txt, subdir-1/b.txt), each as a single-file batch. The ignored files (b-ignore.txt,
+	// subdir-1/c-ignore.txt, and everything under subdir-2) must not produce any batches.
+	assertBatchCount(t, config.DBFile, config.FullS3Prefix, 4)
+}
+
+// TestRoundTrip_NoIgnoreFile makes sure backups still work when there is no .dbignore file present
+// (i.e. the ignore file is nil).
+func TestRoundTrip_NoIgnoreFile(t *testing.T) {
+	config := getDefaultTestConfig()
+	defer config.Cleanup()
+	testBaseDir := config.TestBaseDir
+
+	must(createTestFile(filepath.Join(testBaseDir, "a.txt"), 5))
+	must(createTestFile(filepath.Join(testBaseDir, "subdir-1/b.txt"), 9))
 
 	roundTripTest(config, t)
 }
-*/

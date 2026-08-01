@@ -11,6 +11,10 @@ type IgnoreFile struct {
 }
 
 func (i *IgnoreFile) IsIgnored(path string) bool {
+	// A nil IgnoreFile means there was no .dbignore file, so nothing is ignored.
+	if i == nil {
+		return false
+	}
 	for _, regex := range i.Ignore {
 		if regex.MatchString(path) {
 			return true

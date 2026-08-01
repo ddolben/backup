@@ -56,6 +56,15 @@ func BackupFiles(
 	// Clean up the root path, since it was user input (e.g. resolve '..' elements).
 	cleanRoot := filepath.Clean(localRoot)
 
+	// Load the .dbignore file, if there is one. For now we only support one file in the root of the
+	// backup directory.
+	ignoreFile, err := LoadIgnoreFile(filepath.Join(cleanRoot, ".dbignore"))
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Fatalf("error reading .dbignore file: %v", err)
+		}
+	}
+
 	// Download the backup db from S3 and check if any files have changed since the last time we did a
 	// backup.
 	changes, err := downloadAndCompareDB(logger, client, dbFile, bucket, prefixBase, name)
@@ -76,7 +85,7 @@ func BackupFiles(
 
 	// Scan through all the files in the directory and arrange them into batches.
 	logger.Verbosef("> Scanning files")
-	batches, err := getFilesToBackup(logger, db, cleanRoot, cleanRoot, sizeThreshold, summary)
+	batches, err := getFilesToBackup(logger, db, cleanRoot, cleanRoot, sizeThreshold, ignoreFile, summary)
 	if err != nil {
 		log.Fatalf("error finding files to backup: %v", err)
 	}
@@ -445,6 +454,7 @@ func getFilesToBackup(
 	root string,
 	searchPath string,
 	sizeThreshold int64,
+	ignoreFile *IgnoreFile,
 	summary *backupSummary,
 ) ([]*BackupBatch, error) {
 	// Get files in directory
@@ -460,8 +470,13 @@ func getFilesToBackup(
 		path := filepath.Join(searchPath, file.Name())
 		logger.Verbosef("scanning path %q", path)
 
+		if ignoreFile.IsIgnored(path) {
+			logger.Verbosef("ignoring path %q", path)
+			continue
+		}
+
 		if file.IsDir() {
-			subBatches, err := getFilesToBackup(logger, db, root, path, sizeThreshold, summary)
+			subBatches, err := getFilesToBackup(logger, db, root, path, sizeThreshold, ignoreFile, summary)
 			if err != nil {
 				return nil, err
 			}
